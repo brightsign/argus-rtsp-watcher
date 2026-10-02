@@ -354,6 +354,7 @@ The repo has **no dependency on a sibling Argus tree**. Every runtime asset is p
 | Target | Produces | Needs |
 |--------|----------|-------|
 | `make prep` | the Rockchip RKNN API headers + `librknnrt.so` into `engine/include/` | network |
+| `make fetch-sdk` | installs the aarch64 cross-compile SDK into `./sdk` | the cobra toolchain installer — see below |
 | `make build-engine` | the C++ engine (aarch64) | the cross-compile SDK — see below |
 | `make build-mosquitto` | the mosquitto broker (from source) + client tools | SDK |
 | `make build-libs` | the runtime `lib/` tree (OpenCV/GStreamer/RGA/RKNN/TurboJPEG), harvested from the SDK sysroot | SDK |
@@ -362,7 +363,7 @@ The repo has **no dependency on a sibling Argus tree**. Every runtime asset is p
 
 The **RKNN headers and runtime** are not vendored: the Rockchip RKNN API headers and `librknnrt.so` are fetched from the pinned upstream (`airockchip/rknn-toolkit2` `v2.3.0`) by `make prep` into `engine/include/` (a prerequisite of the engine build), so no Rockchip-proprietary bytes live in this repo.
 
-The **cross-compile SDK** is set up by `scripts/fetch-sdk.sh`: place the BrightSign `brightsign-x86_64-cobra-toolchain-*.sh` installer at the repo root (or pass its path) and the script installs it into gitignored `./sdk`. Model compilation uses Docker to build the one-time `rknn_tk2` toolkit image. Each target guards its inputs and fails with a clear message when something is missing.
+The **cross-compile SDK** is installed by `make fetch-sdk`, which runs automatically as a prerequisite of the cross-compile targets (`build-engine`, `build-libs`, `build-mosquitto`) — so `make build` sets it up on its own, while host-only `make run-tests` stays SDK-free. It needs the BrightSign `brightsign-x86_64-cobra-toolchain-*.sh` installer: drop it at the repo root, or point to it with `make build SDK_INSTALLER=/path/to/brightsign-x86_64-cobra-toolchain-9.0.189.sh`. It installs (self-relocating, ~1.6 GB) into gitignored `./sdk`; an already-installed SDK is detected and skipped. Model compilation uses Docker to build the one-time `rknn_tk2` toolkit image. Each target guards its inputs and fails with a clear message when something is missing.
 
 ## Deploying to a player
 

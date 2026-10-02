@@ -10,6 +10,9 @@ MOSQUITTO_DIR := build/mosquitto
 LIBS_DIR := build/libs
 MODELS_DIR := build/models
 SDK_ENV := sdk/environment-setup-aarch64-oe-linux
+# Optional: path to the BrightSign cobra toolchain installer. If empty, fetch-sdk
+# searches the repo root / CWD for brightsign-x86_64-cobra-toolchain-*.sh.
+SDK_INSTALLER ?=
 
 # Packaging: the engine, mosquitto broker, runtime libs, and image-stream-server
 # are all generic aarch64 (same for every SoC), so each is built once and staged
@@ -34,23 +37,25 @@ build: package       ## Build watcher + engine, stage all SoCs, and package -> z
 prep:                ## Fetch the Rockchip-origin RKNN headers + runtime into engine/include/ (needs network; not vendored)
 	bash scripts/prep.sh
 
+fetch-sdk:           ## Install the aarch64 cross-compile SDK into ./sdk (needs the cobra toolchain installer; pass SDK_INSTALLER=/path or drop it at the repo root)
+	bash scripts/fetch-sdk.sh $(SDK_INSTALLER)
+
 build-watcher:       ## Cross-compile the Go watcher for arm64
 	GOOS=linux GOARCH=arm64 $(GO) build -o $(WATCHER_BIN) ./cmd/watcher
 
 build-image-server:  ## Build the image-stream-server (MJPEG preview) from its upstream repo (needs git + go + network)
 	bash scripts/build-image-server.sh $(CURDIR)/$(IMAGE_SERVER_BIN)
 
-build-mosquitto:     ## Cross-compile the mosquitto broker + harvest client tools from the SDK sysroot (needs sdk/)
+build-mosquitto: fetch-sdk ## Cross-compile the mosquitto broker + harvest client tools from the SDK sysroot
 	bash scripts/build-mosquitto.sh $(CURDIR)/$(MOSQUITTO_DIR)
 
-build-libs: prep     ## Harvest the aarch64 runtime libraries (OpenCV/GStreamer/RGA/RKNN/...) from the SDK sysroot (needs sdk/)
+build-libs: prep fetch-sdk ## Harvest the aarch64 runtime libraries (OpenCV/GStreamer/RGA/RKNN/...) from the SDK sysroot
 	bash scripts/build-libs.sh $(CURDIR)/$(LIBS_DIR)
 
 build-models:        ## Compile the RKNN models per SoC from upstream ONNX (needs docker + ~10GB + network)
 	bash scripts/build-models.sh $(CURDIR)/$(MODELS_DIR) $(SOC_LIST)
 
-build-engine: prep   ## Cross-compile the C++ engine for TARGET_SOC (default rk3588); requires sdk/ (see scripts/fetch-sdk.sh)
-	@test -f $(SDK_ENV) || { echo "Missing $(SDK_ENV) - run scripts/fetch-sdk.sh first"; exit 1; }
+build-engine: prep fetch-sdk ## Cross-compile the C++ engine for TARGET_SOC (default rk3588)
 	mkdir -p $(ENGINE_BUILD_DIR)
 	bash -c 'source $(CURDIR)/$(SDK_ENV) && \
 		cmake -S $(CURDIR)/engine -B $(CURDIR)/$(ENGINE_BUILD_DIR) \
@@ -85,4 +90,4 @@ run-integration-tests: ## Run hardware/engine integration tests (needs `make bui
 clean:               ## Remove build artifacts
 	rm -rf build staging *.zip
 
-.PHONY: help build prep build-watcher build-image-server build-mosquitto build-libs build-models build-engine build-engine-tests run-engine-tests package test run-tests run-integration-tests clean
+.PHONY: help build prep fetch-sdk build-watcher build-image-server build-mosquitto build-libs build-models build-engine build-engine-tests run-engine-tests package test run-tests run-integration-tests clean
