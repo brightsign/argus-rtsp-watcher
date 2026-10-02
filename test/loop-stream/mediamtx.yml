@@ -1,0 +1,28 @@
+# Accuracy-test stream source (runs on rtsp-host).
+# Loops one reference clip forever as a single RTSP path. All watcher streams
+# point at this one path, so every channel ingests identical frames -- that is
+# what makes "all 8 channels must report the same time-in-zone" a valid test.
+#
+# Start with ./run.sh ; the clip is test/loop-stream/video/people-walking.mp4
+# (H.264 1280x720, transcoded from the VP9 original).
+
+rtsp: yes
+rtspAddress: :8554
+
+# Source only -- no other listeners needed.
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+webrtcAdditionalHosts: []
+
+paths:
+  test:
+    # Loop the file forever into the path. -c:v copy (already H.264) keeps rtsp-host
+    # CPU low; -re paces it at real time so the players see a live ~30fps stream.
+    runOnInit: >
+      ffmpeg -re -stream_loop -1 -fflags +genpts
+      -i /video/people-walking.mp4
+      -c:v copy -f rtsp -rtsp_transport tcp
+      rtsp://localhost:8554/$MTX_PATH
+    runOnInitRestart: yes

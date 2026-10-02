@@ -1,0 +1,20 @@
+# Argus RTSP simulator: serve looped local video files as RTSP streams so the
+# watcher can be tested without live cameras. See README.md.
+#
+# Each path runs stream.sh, which loops the matching video(s) from ./videos into
+# that RTSP path via ffmpeg (bundled in the mediamtx :latest-ffmpeg image).
+# runOnInitRestart keeps it always publishing, so the engine never hits a
+# first-frame timeout, and it retries if a video is added after startup.
+
+logLevel: info
+
+paths:
+  lobby:
+    runOnInit: sh /scripts/stream.sh lobby
+    runOnInitRestart: yes
+  entrance:
+    runOnInit: sh /scripts/stream.sh entrance
+    runOnInitRestart: yes
+  aisle:
+    runOnInit: sh /scripts/stream.sh aisle
+    runOnInitRestart: yes

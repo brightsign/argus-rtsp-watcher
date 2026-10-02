@@ -1,0 +1,12 @@
+{
+  "streams": [
+    { "id": "test1", "rtsp_url": "rtsp://192.0.2.10:8554/test", "target_fps": 10, "zone": [0.0, 0.0, 1.0, 1.0] },
+    { "id": "test2", "rtsp_url": "rtsp://192.0.2.10:8554/test", "target_fps": 10, "zone": [0.0, 0.0, 1.0, 1.0] },
+    { "id": "test3", "rtsp_url": "rtsp://192.0.2.10:8554/test", "target_fps": 10, "zone": [0.0, 0.0, 1.0, 1.0] },
+    { "id": "test4", "rtsp_url": "rtsp://192.0.2.10:8554/test", "target_fps": 10, "zone": [0.0, 0.0, 1.0, 1.0] },
+    { "id": "test5", "rtsp_url": "rtsp://192.0.2.10:8554/test", "target_fps": 10, "zone": [0.0, 0.0, 1.0, 1.0] },
+    { "id": "test6", "rtsp_url": "rtsp://192.0.2.10:8554/test", "target_fps": 10, "zone": [0.0, 0.0, 1.0, 1.0] },
+    { "id": "test7", "rtsp_url": "rtsp://192.0.2.10:8554/test", "target_fps": 10, "zone": [0.0, 0.0, 1.0, 1.0] },
+    { "id": "test8", "rtsp_url": "rtsp://192.0.2.10:8554/test", "target_fps": 10, "zone": [0.0, 0.0, 1.0, 1.0] }
+  ]
+}

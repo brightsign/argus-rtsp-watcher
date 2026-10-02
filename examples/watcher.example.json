@@ -1,0 +1,15 @@
+{
+  "streams": [
+    {
+      "id": "cam1",
+      "rtsp_url": "rtsp://192.0.2.101:554/stream1",
+      "target_fps": 10,
+      "zone": [0.146, 0.104, 0.781, 0.972]
+    },
+    {
+      "id": "cam2",
+      "rtsp_url": "rtsp://192.0.2.102:554/stream1",
+      "target_fps": 10
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "streams": [
+    {
+      "id": "entrance",
+      "rtsp_url": "rtsp://192.0.2.10:8554/entrance",
+      "target_fps": 10,
+      "confidence": 0.4,
+      "zone": [0.10, 0.30, 0.90, 1.00]
+    },
+    {
+      "id": "lobby",
+      "rtsp_url": "rtsp://192.0.2.10:8554/lobby",
+      "target_fps": 5,
+      "zone": [0.0, 0.0, 1.0, 1.0]
+    },
+    {
+      "id": "kiosk-usb",
+      "usb": true,
+      "target_fps": 10
+    }
+  ]
+}

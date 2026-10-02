@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Argus Video Wall</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+    }
+    #wall {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
+      gap: 0;
+      width: 100vw;
+      height: 100vh;
+    }
+    .tile {
+      background: #000;
+      overflow: hidden;
+    }
+    /* object-fit: contain keeps the whole annotated frame (including zone
+       boxes) visible, letterboxed on black rather than cropped. */
+    .tile img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div id="wall">
+    <div class="tile"><img id="tile-0" alt=""></div>
+    <div class="tile"><img id="tile-1" alt=""></div>
+    <div class="tile"><img id="tile-2" alt=""></div>
+    <div class="tile"><img id="tile-3" alt=""></div>
+  </div>
+
+  <script>
+    "use strict";
+
+    // The watcher exports one annotated MJPEG feed per stream at
+    // 127.0.0.1:(20200 + stream index). Quadrants map row-major:
+    //   20200 top-left     20201 top-right
+    //   20202 bottom-left  20203 bottom-right
+    // A port with no listener leaves its quadrant solid black and is
+    // retried until the feed appears, so feeds may come and go freely.
+    var HOST = "127.0.0.1";
+    var PORTS = [20200, 20201, 20202, 20203];
+    var RETRY_MS = 3000;
+
+    function streamUrl(port) {
+      // Cache-buster forces a fresh connection on each (re)connect so a
+      // previously refused socket is never reused from cache.
+      return "http://" + HOST + ":" + port + "/video?ts=" + Date.now();
+    }
+
+    function mount(img, port) {
+      var retryTimer = null;
+
+      function scheduleRetry() {
+        if (retryTimer !== null) return;
+        retryTimer = setTimeout(function () {
+          retryTimer = null;
+          img.src = streamUrl(port);
+        }, RETRY_MS);
+      }
+
+      // A refused port clears the tile to black, then retries. When the feed
+      // is up, frames render directly over the black tile background.
+      img.addEventListener("error", function () {
+        img.removeAttribute("src");
+        scheduleRetry();
+      });
+
+      img.src = streamUrl(port);
+    }
+
+    var imgs = document.querySelectorAll("#wall img");
+    for (var i = 0; i < PORTS.length; i++) {
+      mount(imgs[i], PORTS[i]);
+    }
+  </script>
+</body>
+</html>

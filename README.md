@@ -1,0 +1,429 @@
+# Argus RTSP Watcher
+
+Run real-time person and gaze analytics on **multiple RTSP camera feeds** from a single NPU-equipped BrightSign player.
+
+## What it does
+
+Argus RTSP Watcher turns one BrightSign player into a multi-camera audience-measurement node. Point it at several RTSP streams and it runs the [Argus](../argus-audience-measurement-extension) person + gaze pipeline on each one, on the player's Rockchip NPU, and publishes per-stream analytics over MQTT.
+
+For every camera it reports, per person: a bounding box, whether they're looking at the display (gaze), dwell time, movement direction and speed, and entry/exit events — with stable per-person IDs across frames. It can also serve each stream as an annotated MJPEG video (boxes drawn on the frame) for a browser.
+
+The design goal: several cameras, one player, no cloud. All inference runs on-device; no images leave the player unless you enable the preview server.
+
+### Why it exists
+
+The base Argus extension analyzes **one** camera per player. Many installs have several cameras covering one space but want one player doing the compute. The NPU already has the headroom — three streams at 5–10 fps is the same total inference rate as one stream at 30 fps — so what was missing was a way to run and supervise N pipelines at once. That's this project.
+
+## Key features
+
+- **Multiple RTSP streams, one player** — configurable N (validated for 3 on XT5).
+- **Per-person analytics** — person box, gaze + gaze time, dwell, direction, speed, entry/exit, stable track IDs.
+- **Per-stream MQTT** — `bs/argus/<stream-id>/analytics`, ~1 msg/s. See **[docs/bounding-boxes.md](docs/bounding-boxes.md)** for the box data.
+- **Zones of interest** — draw a per-camera rectangle and each person reports `in_zone` (their feet inside it). Set it with `tools/zone-picker.sh`; see [Zones](#zones-regions-of-interest).
+- **Browser preview** — optional annotated MJPEG per stream (boxes over the video).
+- **Live reconfiguration** — edit `watcher.json` and streams are added/removed/retuned without restarting the others.
+- **Fault isolation** — each stream is its own process group; one camera failing never touches the others; automatic restart with backoff.
+- **Health endpoint** — `GET :9200/healthz` reports per-stream state and capacity.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Cameras["RTSP cameras"]
+        C1["cam 1"]
+        C2["cam 2"]
+        C3["cam N"]
+    end
+    subgraph Player["BrightSign player (one device)"]
+        W["watcher (Go supervisor)"]
+        subgraph Eng["per-stream engines"]
+            E1["argus-engine #1"]
+            E2["argus-engine #2"]
+            E3["argus-engine #N"]
+        end
+        NPU["Shared NPU (all cores)"]
+        BRK["mosquitto :1883"]
+        subgraph Prev["per-stream MJPEG (:20200+i)"]
+            P1["image-stream-server"]
+        end
+    end
+    C1 --> E1
+    C2 --> E2
+    C3 --> E3
+    W -. spawn / monitor / reconcile .-> E1 & E2 & E3 & P1
+    E1 & E2 & E3 --> NPU
+    E1 & E2 & E3 -->|bs/argus/&lt;id&gt;/analytics| BRK
+    E1 & E2 & E3 -->|annotated JPEG| P1
+    BRK --> SUB["MQTT subscribers"]
+    P1 --> BROWSER["browser"]
+```
+
+The **watcher** is a small Go supervisor. It discovers `watcher.json`, renders one engine config per stream, starts one mosquitto broker plus one engine and one MJPEG preview server per stream, and supervises them all. The **engine** is a lean copy of the Argus person+gaze pipeline (YOLOX person detection + RetinaFace face/gaze + ByteTrack), one process per stream. See **[docs/DESIGN.md](docs/DESIGN.md)**.
+
+## Supported hardware
+
+| Player | SoC | NPU | Streams (person + gaze) |
+|--------|-----|-----|-------------------------|
+| **XT5** | RK3588 | 3-core, 6 TOPS | 3 @ 5–10 fps (primary target) |
+| **XS156** | RK3576 | 2-core, 4 TOPS | 2–3 @ 5–10 fps (validate) |
+| **LS5 / HS5** | RK3568 | 1-core, 1 TOPS | 1 stream (multi-stream not supported at target fps) |
+
+Configuring more streams than a tier's capacity is a startup warning, not a failure.
+
+## Prerequisites
+
+- **A player**: an NPU-equipped BrightSign player (RK3588/RK3576/RK3568) with SSH enabled.
+- **RTSP sources** reachable from the player, carrying **plain RTSP** H.264/H.265. Cameras that only offer secure RTSP (`rtsps://` / SRTP, e.g. UniFi Protect) must be fronted by an RTSP proxy — see [RTSP sources & MediaMTX](#rtsp-sources--mediamtx). To test with **no cameras at all**, serve looped video files as RTSP with the harness in [test/rtsp-sim/](test/rtsp-sim/).
+- **To build**: an x86_64 Linux host with Docker (for RKNN model compilation), Go 1.22+, `git`, network access, and the BrightSign aarch64 cross-compile SDK. All runtime assets are built on the host from pinned upstream sources; you cannot build on the player. See [Building](#building) for the per-asset breakdown.
+
+## Quick start
+
+1. **Write `watcher.json`** listing your streams:
+
+   ```json
+   {
+     "streams": [
+       { "id": "lobby",      "rtsp_url": "rtsp://192.0.2.10:8554/lobby",      "target_fps": 10 },
+       { "id": "entrance", "rtsp_url": "rtsp://192.0.2.10:8554/entrance", "target_fps": 10 },
+       { "id": "aisle",   "rtsp_url": "rtsp://192.0.2.10:8554/aisle",   "target_fps": 5  }
+     ]
+   }
+   ```
+
+2. **Put it on the player's SD card** at `/storage/sd/watcher.json`. It wins the config-discovery order, so no rebuild needed to change cameras.
+
+3. **Install the extension** (see [Deploying to a player](#deploying-to-a-player)) and reboot.
+
+4. **Watch the data**:
+
+   ```sh
+   mosquitto_sub -h <player-ip> -t 'bs/argus/#' -v
+   ```
+
+   You should see one message per second per stream on `bs/argus/lobby/analytics`, `.../entrance/analytics`, `.../aisle/analytics`.
+
+5. **(Optional) Mark a zone** to learn when someone is standing in a specific area — see [Zones](#zones-regions-of-interest).
+
+## Configuration
+
+### `watcher.json`
+
+The operator-facing file. Only these fields (strict parsing — no comments, no extra keys):
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `streams[].id` | yes | Unique, `^[A-Za-z0-9_-]+$`. Becomes the MQTT topic and preview port index. |
+| `streams[].rtsp_url` | source* | The camera/proxy RTSP URL. |
+| `streams[].file_path` | source* | A local video file to analyze instead of a live feed (test/offline). |
+| `streams[].usb` | source* | `true` to capture from the player's local USB camera. The device is auto-detected. |
+| `streams[].usb_width` | no | USB capture width in pixels. Only with `usb: true`; omit for the engine default. |
+| `streams[].usb_height` | no | USB capture height in pixels. Only with `usb: true`; omit for the engine default. |
+| `streams[].usb_fps` | no | USB capture frame rate. Only with `usb: true`; omit for the engine default. |
+| `streams[].target_fps` | no | Default `10`; intended range 5–10. Caps NPU load. |
+| `streams[].confidence` | no | Person-detection threshold, `0.0`–`1.0`. Omit for the engine default (`0.5`). See [Detection confidence](#detection-confidence). |
+| `streams[].zone` | no | Custom "important area" as `[x0,y0,x1,y1]`, normalized 0..1. When set, each track reports `in_zone` (feet inside). Draw it with `tools/zone-picker.html`. |
+
+*Each stream names exactly one source: `rtsp_url`, `file_path`, or `usb`.
+
+### Choosing a source
+
+Every stream has exactly one input. Pick the one that matches where the video comes from:
+
+```json
+{
+  "streams": [
+    { "id": "porch",  "rtsp_url": "rtsp://192.0.2.10:8554/porch", "target_fps": 10 },
+    { "id": "sample", "file_path": "/storage/sd/clips/lobby.mp4",     "target_fps": 10 },
+    { "id": "local",  "usb": true, "usb_width": 1280, "usb_height": 720, "usb_fps": 30, "target_fps": 10 }
+  ]
+}
+```
+
+- **`rtsp_url`** — a live camera or an RTSP proxy (the normal case).
+- **`file_path`** — a video file on the player, for offline runs and accuracy testing.
+- **`usb`** — the player's attached USB camera. The engine auto-detects the device node, so you do not name it. The `usb_width`/`usb_height`/`usb_fps` keys are optional overrides for how the camera is opened; leave them out to let the engine choose. Setting any `usb_*` key without `usb: true` is a config error.
+
+### Detection confidence
+
+`confidence` sets how sure the detector must be before it reports a person, from `0.0` (accept everything) to `1.0` (accept nothing). It defaults to the engine's built-in `0.5`. Lower it to catch more distant or partially-occluded people at the cost of more false positives; raise it to suppress spurious boxes in a busy scene. It is per stream, so a hard camera can run looser than a clean one:
+
+```json
+{
+  "streams": [
+    { "id": "far-lot", "rtsp_url": "rtsp://192.0.2.10:8554/far-lot", "confidence": 0.35 },
+    { "id": "lobby",   "rtsp_url": "rtsp://192.0.2.10:8554/lobby",   "confidence": 0.6  }
+  ]
+}
+```
+
+### Discovery order
+
+The watcher looks for `watcher.json` in this order, first found wins (no CLI/env override):
+
+1. `/storage/sd/watcher.json`
+2. `/storage/sd/configs/watcher.json`
+3. `/storage/ssd/watcher.json`
+4. `/storage/ssd/configs/watcher.json`
+5. the packaged default inside the extension
+
+See **[examples/](examples/)** for ready-to-copy `watcher.json` files (basic,
+USB, and a multi-stream feature showcase).
+
+## RTSP sources & MediaMTX
+
+The engine consumes **plain RTSP** carrying **H.264 or H.265**. Point each
+stream's `rtsp_url` at a camera or an RTSP proxy. Other codecs (e.g. VP9) must be
+transcoded to H.264 first.
+
+### Why a proxy is often required
+
+BrightSign players **do not yet support secure RTSP** — `rtsps://` with SRTP
+encryption. Several camera systems only expose their streams that way, so the
+player cannot open them directly:
+
+- **UniFi Protect** serves `rtsps://<nvr>:7441/<token>?enableSrtp` (SRTP-encrypted).
+- Other cameras send non-standard RTP packetization that needs normalizing, only
+  publish on demand, or you simply want one upstream pull fanned out to several
+  readers.
+
+The fix is a small **RTSP proxy** — [MediaMTX](https://github.com/bluenviron/mediamtx) —
+on an always-on LAN host (a mini PC, NUC, or Pi). It pulls from each camera and
+re-publishes a **plain `rtsp://`** stream the player can read. Your `watcher.json`
+then points at the proxy, not the camera.
+
+```
+ UniFi / SRTP cameras ──rtsps(7441)──▶  MediaMTX proxy  ──rtsp(8554)──▶  BrightSign player
+                                        (converts to plain RTSP)
+```
+
+### Configuring MediaMTX (UniFi Protect example)
+
+`mediamtx.yml` on the proxy host:
+
+```yaml
+rtsp: yes
+rtspAddress: :8554
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+
+paths:
+  entrance:
+    # UniFi Protect serves the SAME stream token as PLAIN RTSP on port 7447.
+    # Use 7447 -- NOT the rtsps/SRTP variant on 7441 (?enableSrtp): the player
+    # can't decrypt SRTP, and that variant also garbles through MediaMTX
+    # (STAP-B / AU-index RTP errors). The token comes from the Protect UI:
+    # camera -> Settings -> Advanced -> enable RTSP.
+    source: rtsp://<nvr-ip>:7447/<camera-token>
+    sourceOnDemand: no    # keep warm so the player gets its first frame quickly
+    rtspTransport: tcp    # UniFi's oversized RTP packets get truncated over UDP
+```
+
+Run it with podman (or docker):
+
+```sh
+podman run -d --name mediamtx --network host \
+  -v ./mediamtx.yml:/mediamtx.yml:ro bluenviron/mediamtx:latest
+```
+
+Then set `"rtsp_url": "rtsp://<proxy-ip>:8554/entrance"` in `watcher.json`
+(see `examples/watcher-advanced.example.json`).
+
+> **Key points:** use port **7447** (plain RTSP), never 7441 (`rtsps`/SRTP); pull
+> over **TCP**; and keep `sourceOnDemand: no` so the stream stays warm and the
+> engine's first-frame wait doesn't time out.
+
+### Testing without cameras
+
+Serve looped video files as RTSP with the bundled harnesses — no proxy or
+cameras needed:
+
+- [test/rtsp-sim/](test/rtsp-sim/) — several looped clips as separate cameras.
+- [test/loop-stream/](test/loop-stream/) — one clip on N channels, used by the
+  accuracy test that checks all channels report the same results.
+
+## Outputs
+
+### MQTT (primary)
+
+Broker on the player, port `1883`, anonymous. One topic per stream: `bs/argus/<id>/analytics`, schema `analytics/v7.0`, ~1 msg/s. The per-person bounding boxes and gaze boxes are in the `tracks[]` array.
+
+When a stream has a `zone` configured, each track also carries an `in_zone` boolean — see [Zones](#zones-regions-of-interest).
+
+**→ Full detail, schema, coordinate system, and code examples: [docs/bounding-boxes.md](docs/bounding-boxes.md).**
+
+#### Consuming the feeds
+
+Any MQTT client works. The repo also ships a minimal example client that prints each message's JSON (one per line, connection logs on stderr), so you can pipe it to `jq`:
+
+```sh
+# raw JSON from every feed
+mosquitto_sub -h <player-ip> -t 'bs/argus/#'
+
+# bundled example client -> jq
+make -C example-client build
+example-client/bin/argus-example-client --broker <player-ip>:1883 | jq .
+
+# only messages where someone is in a zone
+example-client/bin/argus-example-client --broker <player-ip>:1883 \
+  | jq -c 'select(any(.tracks[]?; .in_zone == true))'
+```
+
+### Browser preview (optional, on by default)
+
+Each stream is served as annotated MJPEG (boxes drawn on the video) at:
+
+```
+http://<player-ip>:<port>/      port = 20200 + the stream's 0-based index in watcher.json
+```
+
+So the example config above gives `lobby` → `:20200`, `entrance` → `:20201`, `aisle` → `:20202`. The player must allow inbound on those ports. Annotated frames are written on-device to `/tmp/argus-frames/<id>/output.jpg`.
+
+### Health
+
+```sh
+curl -s http://<player-ip>:9200/healthz
+```
+
+Returns the detected SoC/tier, configured vs. safe stream count, and each stream's state (`running` / `restarting` / `failed`) with restart counts.
+
+## Zones (regions of interest)
+
+Mark a rectangle on a camera and Argus tells you when a person is standing in it. It is additive **labeling, not a gate**: every message is still published; each track simply gains an `in_zone` boolean.
+
+- **Inside rule:** a person's **feet** — their bounding-box bottom-centre — inside the rectangle → `in_zone: true`, otherwise `false`. It's per person, so two people in the same message can differ.
+- **Coordinates:** normalized `0..1` fractions of the frame, `[x0, y0, x1, y1]` — resolution-independent.
+- A stream with **no** `zone` emits no `in_zone` field at all.
+
+**Set a zone:**
+
+1. Draw it on the live camera and copy the coordinates:
+
+   ```sh
+   tools/zone-picker.sh --player <player-ip> --port <20200+index>
+   ```
+
+   Drag a rectangle over the area; copy the `"zone": [..]` line it prints. (No script? Open `tools/zone-picker.html` in a browser and load a frame or `http://<player>:<port>/image`.)
+
+2. Add it to that stream in `watcher.json`:
+
+   ```json
+   { "id": "entrance", "rtsp_url": "rtsp://.../entrance", "target_fps": 10, "zone": [0.40, 0.53, 0.90, 1.00] }
+   ```
+
+3. Save it to `/storage/sd/watcher.json`. That one camera's engine restarts (a few seconds) and its tracks start reporting `in_zone`; the other cameras are untouched.
+
+**Act only when someone is in a zone** — filter client-side (nothing is suppressed on the player):
+
+```sh
+mosquitto_sub -h <player-ip> -t 'bs/argus/#' \
+  | jq -c 'select(any(.tracks[]?; .in_zone == true))'
+```
+
+## Tools (host-side)
+
+Helpers in `tools/` (their own Go module + scripts). Build the binaries with `make -C tools build`; full detail in **[tools/README.md](tools/README.md)** and **[docs/recording-and-sync.md](docs/recording-and-sync.md)**.
+
+| Tool | What it does |
+|------|--------------|
+| `tools/zone-picker.sh` / `zone-picker.html` | Draw a zone on a live or recorded frame; outputs the normalized `zone` for `watcher.json` and pixel coords for `boxstats`. |
+| `tools/record-frames.sh` | Record a stream's annotated frames **and** its MQTT box data together, in sync. |
+| `tools/bin/framebox` | Given a recorded frame, decode its `frame_seq` stamp and print the boxes recorded for that exact frame. |
+| `tools/bin/boxstats` | Report the range of person-box areas inside a region across a recording (helps pick a size/zone filter). |
+
+## Building
+
+All build and test go through the Makefile (run `make` with no target to list them):
+
+```sh
+make            # list targets
+make run-tests  # Go unit tests + engine (C++) unit tests
+make build      # cross-compile watcher + engine for all SoCs and produce the extension zips
+```
+
+`make build` produces two packages in the repo root:
+
+- `argus-rtsp-watcher-ext-<ts>.zip` — the LVM **extension** (install this on a player).
+- `argus-rtsp-watcher-<ts>.zip` — a dev bundle you unzip and run directly.
+
+### Build-time assets (self-contained)
+
+The repo has **no dependency on a sibling Argus tree**. Every runtime asset is produced on demand from pinned upstream sources on the first `make build` and cached under gitignored `build/` (re-runs skip what's already built):
+
+| Target | Produces | Needs |
+|--------|----------|-------|
+| `make prep` | the Rockchip RKNN API headers + `librknnrt.so` into `engine/include/` | network |
+| `make build-engine` | the C++ engine (aarch64) | the cross-compile SDK — see below |
+| `make build-mosquitto` | the mosquitto broker (from source) + client tools | SDK |
+| `make build-libs` | the runtime `lib/` tree (OpenCV/GStreamer/RGA/RKNN/TurboJPEG), harvested from the SDK sysroot | SDK |
+| `make build-models` | `RetinaFace.rknn` + `yolox_s.rknn` per SoC + coco labels, compiled from upstream ONNX | **Docker** + ~10GB + network |
+| `make build-image-server` | the MJPEG preview server (from its upstream repo) | `git` + `go` + network |
+
+The **RKNN headers and runtime** are not vendored: the Rockchip RKNN API headers and `librknnrt.so` are fetched from the pinned upstream (`airockchip/rknn-toolkit2` `v2.3.0`) by `make prep` into `engine/include/` (a prerequisite of the engine build), so no Rockchip-proprietary bytes live in this repo.
+
+The **cross-compile SDK** is set up by `scripts/fetch-sdk.sh`: place the BrightSign `brightsign-x86_64-cobra-toolchain-*.sh` installer at the repo root (or pass its path) and the script installs it into gitignored `./sdk`. Model compilation uses Docker to build the one-time `rknn_tk2` toolkit image. Each target guards its inputs and fails with a clear message when something is missing.
+
+## Deploying to a player
+
+Copy the extension zip to the player, then install it from the player's root Linux shell:
+
+```sh
+scp argus-rtsp-watcher-ext-<ts>.zip brightsign@<player-ip>:/storage/sd/
+# SSH in and descend to the root shell (Ctrl-C, Enter -> exit -> exit on a dev player), then:
+cd /usr/local
+unzip -o /storage/sd/argus-rtsp-watcher-ext-<ts>.zip
+bash ./ext_npu_argus_rtsp_install-lvm.sh
+exit        # reboots and activates the extension
+```
+
+Extension lifecycle on the player (root shell): `/var/volatile/bsext/ext_npu_argus_rtsp/bsext_init {start|stop|restart|status}`. The watcher owns mosquitto and all engine + preview processes; `bsext_init` only manages the single watcher. See **[docs/HARDWARE-VALIDATION.md](docs/HARDWARE-VALIDATION.md)** for the on-device checklist.
+
+## Project structure
+
+```
+cmd/watcher/        Go supervisor entry point
+internal/
+  config/           watcher.json load + discovery + validation
+  configgen/        render per-stream engine config from the template
+  platform/         SoC detection + capacity tiers
+  supervisor/       process lifecycle, backoff, live reconcile
+  configwatch/      watcher.json change detection
+  broker/           mosquitto start + readiness
+  health/           /healthz
+engine/             lean C++ person+gaze engine (copied/adapted from Argus)
+packaging/          bsext_init + make-extension-lvm
+configs/            engine.template.json (per-stream engine config template)
+examples/           example watcher.json configs (the default baked into the extension lives here)
+scripts/            build.sh, fetch-sdk.sh
+tools/              host tools: zone-picker(.sh/.html), record-frames.sh, framebox, boxstats
+example-client/     minimal MQTT client that prints each message's JSON
+test/               rtsp-sim (multi-cam sim) + loop-stream (accuracy test harness)
+docs/               DESIGN.md, bounding-boxes.md, recording-and-sync.md, HARDWARE-VALIDATION.md
+```
+
+## Troubleshooting
+
+| Symptom | Check |
+|---------|-------|
+| No MQTT messages | Is an engine running? `curl :9200/healthz` — if `Restarts` keeps climbing, the engine can't open its RTSP stream. |
+| Engines crash-loop, `first-frame timeout` in `/tmp/watcher.log` | The RTSP source is slow to deliver the first frame. Keep the source warm (e.g. MediaMTX `sourceOnDemand: no`) and confirm the player can reach the URL. The engine allows up to 15s for the first frame. |
+| Preview page loads but shows a placeholder box | The engine isn't writing frames (usually the same RTSP problem above) — fix the engine first; the preview serves whatever is at `/tmp/argus-frames/<id>/output.jpg`. |
+| `over_capacity: true` in health | More streams than the SoC tier supports (see the hardware table). |
+| Player unreachable on preview ports | Open inbound `20200..20200+N-1`. |
+
+Logs: `tail -f /tmp/watcher.log` on the player (engine + watcher output).
+
+## Documentation
+
+- **[docs/bounding-boxes.md](docs/bounding-boxes.md)** — live bounding-box data over MQTT (schema, coordinates, examples).
+- **[docs/recording-and-sync.md](docs/recording-and-sync.md)** — record the MJPEG streams and match them to the box data by frame.
+- **[tools/README.md](tools/README.md)** — host tools: zone picker, recorder, framebox, boxstats.
+- **[test/rtsp-sim/README.md](test/rtsp-sim/README.md)** — serve looped video files as RTSP to test without live cameras.
+- **[docs/DESIGN.md](docs/DESIGN.md)** — architecture and design decisions.
+- **[docs/HARDWARE-VALIDATION.md](docs/HARDWARE-VALIDATION.md)** — on-device validation checklist.
+- **[VISION.md](VISION.md)** — what and why.
+
+## License
+
+See the repository. Engine components are derived from the Argus Audience Measurement Extension.

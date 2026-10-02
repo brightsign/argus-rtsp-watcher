@@ -1,0 +1,8 @@
+{
+  "streams": [
+    { "id": "lobby",           "rtsp_url": "rtsp://rtsp-host:8554/lobby",              "target_fps": 10, "zone": [0.002, 0.593, 0.998, 1.000] },
+    { "id": "entrance",      "rtsp_url": "rtsp://rtsp-host:8554/entrance",         "target_fps": 10, "zone": [0.400, 0.528, 0.899, 1.000] },
+    { "id": "aisle",        "rtsp_url": "rtsp://rtsp-host:8554/aisle",           "target_fps": 10, "zone": [0.265, 0.288, 0.835, 0.997] },
+    { "id": "entrance-live", "rtsp_url": "rtsp://192.0.2.10:8554/entrance",  "target_fps": 10, "zone": [0.400, 0.528, 0.899, 1.000] }
+  ]
+}

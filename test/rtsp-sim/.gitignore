@@ -1,0 +1,5 @@
+# Local test videos are large and machine-specific.
+videos/*.mp4
+videos/*/
+videos/*.txt
+!videos/*.txt.example

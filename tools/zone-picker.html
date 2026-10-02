@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argus Zone Picker</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px system-ui, sans-serif; margin: 16px; }
+  #wrap { position: relative; display: inline-block; max-width: 100%; }
+  #img { max-width: 100%; display: block; }
+  #overlay { position: absolute; inset: 0; cursor: crosshair; }
+  .row { margin: 8px 0; }
+  input[type=text] { width: 24em; max-width: 90vw; }
+  code { background: rgba(127,127,127,.2); padding: 2px 4px; border-radius: 3px; }
+  button { padding: 4px 10px; }
+</style>
+</head>
+<body>
+<h1>Argus Zone Picker</h1>
+<p>Load a recorded frame or the live snapshot, then click-drag a rectangle over the important area.</p>
+<div class="row">
+  <input type="file" id="file" accept="image/*">
+  or URL: <input type="text" id="url" placeholder="http://PLAYER:20201/image">
+  <button id="loadUrl">Load URL</button>
+  <label><input type="checkbox" id="live"> Live (refresh)</label>
+</div>
+<div id="wrap">
+  <img id="img" alt="">
+  <canvas id="overlay"></canvas>
+</div>
+<div class="row">watcher.json: <code id="norm">draw a rectangle</code> <button id="copyNorm">copy</button></div>
+<div class="row">boxstats pixels: <code id="pix">-</code> <button id="copyPix">copy</button></div>
+<script>
+(function () {
+  const img = document.getElementById('img');
+  const canvas = document.getElementById('overlay');
+  const ctx = canvas.getContext('2d');
+  const normEl = document.getElementById('norm');
+  const pixEl = document.getElementById('pix');
+  let drag = null, rect = null;
+
+  function fit() {
+    canvas.width = img.clientWidth;
+    canvas.height = img.clientHeight;
+    draw();
+  }
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!rect) return;
+    ctx.strokeStyle = '#00e5ff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+  }
+  // Map a displayed-canvas point to natural image pixels.
+  function toImage(px, py) {
+    const sx = img.naturalWidth / img.clientWidth;
+    const sy = img.naturalHeight / img.clientHeight;
+    return { x: Math.round(px * sx), y: Math.round(py * sy) };
+  }
+  function report() {
+    if (!rect || !img.naturalWidth) return;
+    const a = toImage(rect.x, rect.y);
+    const b = toImage(rect.x + rect.w, rect.y + rect.h);
+    const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
+    const y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+    const nw = img.naturalWidth, nh = img.naturalHeight;
+    const f = v => (v).toFixed(3);
+    normEl.textContent = `"zone": [${f(x0 / nw)}, ${f(y0 / nh)}, ${f(x1 / nw)}, ${f(y1 / nh)}]`;
+    pixEl.textContent = `${x0},${y0},${x1},${y1}`;
+  }
+
+  canvas.addEventListener('mousedown', e => {
+    const r = canvas.getBoundingClientRect();
+    drag = { x: e.clientX - r.left, y: e.clientY - r.top };
+  });
+  canvas.addEventListener('mousemove', e => {
+    if (!drag) return;
+    const r = canvas.getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    rect = { x: Math.min(drag.x, x), y: Math.min(drag.y, y), w: Math.abs(x - drag.x), h: Math.abs(y - drag.y) };
+    draw();
+    report();
+  });
+  window.addEventListener('mouseup', () => { drag = null; });
+  window.addEventListener('resize', fit);
+  img.addEventListener('load', fit);
+
+  const urlEl = document.getElementById('url');
+  const liveEl = document.getElementById('live');
+  let liveTimer = null, liveBase = '';
+
+  // The picker reads only image DIMENSIONS (naturalWidth/Height), never pixel
+  // data, so a cross-origin image needs no crossOrigin/CORS. We deliberately
+  // omit crossOrigin so a plain player snapshot URL (which sends no CORS
+  // headers) still loads.
+  function loadUrl(u) {
+    liveBase = u.replace(/[?&]_t=\d+/, '');
+    img.src = liveBase;
+  }
+  function stopLive() {
+    if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
+  }
+  function startLive() {
+    if (!liveBase) return;
+    stopLive();
+    liveTimer = setInterval(() => {
+      img.src = liveBase + (liveBase.includes('?') ? '&' : '?') + '_t=' + Date.now();
+    }, 700);
+  }
+
+  document.getElementById('file').addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (f) { liveEl.checked = false; stopLive(); img.src = URL.createObjectURL(f); }
+  });
+  document.getElementById('loadUrl').addEventListener('click', () => {
+    const u = urlEl.value.trim();
+    if (u) { loadUrl(u); if (liveEl.checked) startLive(); }
+  });
+  liveEl.addEventListener('change', () => {
+    if (liveEl.checked) {
+      if (!liveBase && urlEl.value.trim()) loadUrl(urlEl.value.trim());
+      startLive();
+    } else {
+      stopLive();
+    }
+  });
+
+  function copy(el) { navigator.clipboard && navigator.clipboard.writeText(el.textContent); }
+  document.getElementById('copyNorm').addEventListener('click', () => copy(normEl));
+  document.getElementById('copyPix').addEventListener('click', () => copy(pixEl));
+
+  // Auto-load from query params: ?url=<image-url>&live=1 (used by zone-picker.sh)
+  (function initFromQuery() {
+    const p = new URLSearchParams(location.search);
+    const u = p.get('url');
+    if (u) { urlEl.value = u; loadUrl(u); }
+    const live = (p.get('live') || '').toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(live)) { liveEl.checked = true; startLive(); }
+  })();
+})();
+</script>
+</body>
+</html>

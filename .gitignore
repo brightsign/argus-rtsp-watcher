@@ -1,0 +1,42 @@
+# Secrets / editor / local
+.env
+.envrc
+*~
+bin/
+.llm/
+
+# Go best practice
+vendor/
+
+# Build artifacts
+/build/
+/staging/
+*.zip
+/sdk
+*.rknn
+
+# Rockchip-origin sources fetched by `make prep` (not vendored -- see scripts/prep.sh)
+/engine/include/rknn_api.h
+/engine/include/rknn_matmul_api.h
+/engine/include/librknnrt.so
+/engine/include/rga_func.h
+/engine/include/drm_func.h
+/engine/include/rknn_box_priors.h
+/engine/include/font.h
+
+# Operator-specific config (site IPs, per-camera zones) - not tracked
+/watcher.json
+/watcher-*.json
+
+# Tool output / recording data under tools/ and scripts/
+/tools/bin/
+/tools/recordings/
+/scripts/recordings/
+
+# Test video assets (large, machine-specific) - keep code/configs, not media
+/test/test-video/*.mp4
+/test/loop-stream/video/
+
+# Python bytecode
+__pycache__/
+*.pyc

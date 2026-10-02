@@ -1,0 +1,5 @@
+# Example ffmpeg concat playlist. Copy to `lobby.txt` (drop the .example) and
+# edit the paths. Each path is as seen INSIDE the container (this folder = /videos).
+file '/videos/lobby-clip1.mp4'
+file '/videos/lobby-clip2.mp4'
+file '/videos/lobby-clip3.mp4'

@@ -1,0 +1,15 @@
+# RTSP simulator for testing the watcher without live cameras.
+# Works with: `podman compose up` or `docker compose up`.
+services:
+  rtsp-sim:
+    image: docker.io/bluenviron/mediamtx:latest-ffmpeg
+    container_name: argus-rtsp-sim
+    restart: unless-stopped
+    ports:
+      - "8554:8554"       # RTSP (TCP)
+      - "8000:8000/udp"   # RTP  (UDP clients)
+      - "8001:8001/udp"   # RTCP (UDP clients)
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+      - ./stream.sh:/scripts/stream.sh:ro
+      - ./videos:/videos:ro
