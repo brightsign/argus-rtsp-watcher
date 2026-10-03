@@ -80,7 +80,7 @@ func TestSingleStreamSmokeEndToEnd(t *testing.T) {
 			engineBin, runtime.GOARCH)
 	}
 
-	templatePath := filepath.Join(repoRoot, "configs", "engine.template.json")
+	templatePath := filepath.Join(repoRoot, "configs", "config.json")
 	template, err := os.ReadFile(templatePath)
 	if err != nil {
 		t.Fatalf("read engine template %s: %v", templatePath, err)
@@ -178,7 +178,7 @@ func targetSOC() string {
 
 // resolveStagingDir returns the self-contained per-SoC directory that
 // `make build` assembles (argus-engine, bin/mosquitto, lib/, model/,
-// engine.template.json) -- the same layout cmd/watcher expects at
+// config.json) -- the same layout cmd/watcher expects at
 // runtime -- so this test drives the engine exactly as it ships.
 // ARGUS_STAGING_DIR overrides the default for running against a
 // differently-located staging tree.

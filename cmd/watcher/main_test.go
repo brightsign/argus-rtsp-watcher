@@ -11,7 +11,7 @@ import (
 
 func loadTemplateForTest(t *testing.T) []byte {
 	t.Helper()
-	data, err := os.ReadFile("../../configs/engine.template.json")
+	data, err := os.ReadFile("../../configs/config.json")
 	if err != nil {
 		t.Fatal(err)
 	}

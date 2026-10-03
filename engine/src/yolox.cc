@@ -190,7 +190,7 @@ int inference_yolox_model(rknn_app_context_t *app_ctx, image_buffer_t *img, obje
     rknn_input inputs[app_ctx->io_num.n_input];
     rknn_output outputs[app_ctx->io_num.n_output];
     const float nms_threshold = NMS_THRESH;      // Default NMS threshold
-    const float box_conf_threshold = 0.1f; // Use lower threshold to preserve more detections for visual feedback
+    const float box_conf_threshold = conf_threshold; // From model config (conf_threshold), hot-reloadable
     int bg_color = 114;  // Default letterbox background color for YOLO models
     
     if ((!app_ctx) || !(img) || (!od_results)) {

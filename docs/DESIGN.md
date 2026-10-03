@@ -29,7 +29,7 @@ in `VISION.md` and not repeated here except where they constrain implementation.
 flowchart TD
     BI["bsext_init start"] --> W["watcher (Go supervisor)"]
     CFG["watcher.json<br/>(streams list)"] --> W
-    TPL["engine.template.json"] --> W
+    TPL["config.json"] --> W
     W -->|render + spawn| E1["engine #1 (cam1)"]
     W -->|render + spawn| E2["engine #2 (cam2)"]
     W -->|render + spawn| E3["engine #N (camN)"]
@@ -59,7 +59,7 @@ argus-rtsp-watcher/
     watcher/                   # Go supervisor entry point (main.go)
   internal/                    # Go supervisor packages
     config/                    # watcher.json load + discovery order + validation
-    configgen/                 # render engine.template.json -> per-instance configs
+    configgen/                 # render config.json -> per-instance configs
     supervisor/                # child lifecycle, process groups, restart/backoff
     health/                    # /healthz endpoint + structured health log
     platform/                  # SoC detection, tier/capacity table, env setup
@@ -70,7 +70,7 @@ argus-rtsp-watcher/
     bsext_init                 # init script: launches watcher
     make-extension-lvm         # LVM image packaging (adapted from argus)
   configs/
-    engine.template.json       # per-instance engine config template
+    config.json       # per-instance engine config template
   examples/
     watcher.example.json       # example streams list (default baked into the extension)
   scripts/
@@ -169,7 +169,7 @@ region of interest; when set, each track reports an additive `in_zone` boolean
 when its feet fall inside), and optional overrides passed through to the
 template (e.g. thresholds).
 
-### 5.2 `engine.template.json` (owned by the project)
+### 5.2 `config.json` (owned by the project)
 
 A full engine config with placeholders, rarely edited. Keeps all engine knobs in
 one place. Placeholders are substituted per stream during config generation.
@@ -197,7 +197,7 @@ never interferes with generated configs.
 ## 6. Config Generation (`internal/configgen`)
 
 Pure input → output transformation (unit-testable without hardware). For each
-stream, render `engine.template.json`, substituting:
+stream, render `config.json`, substituting:
 
 | Engine config field | Source | Purpose |
 |---------------------|--------|---------|
@@ -292,7 +292,7 @@ All build and test flows go through the **Makefile** (per project conventions);
 - **Packaging** produces a BrightSign LVM extension via
   `packaging/make-extension-lvm` (adapted from argus). The package contains: the
   `watcher` binary, the engine binary, models per SoC, mosquitto, the required
-  GStreamer/RKNN/RGA libraries, `bsext_init`, `engine.template.json`, and the
+  GStreamer/RKNN/RGA libraries, `bsext_init`, `config.json`, and the
   default `watcher.json`.
 - **`bsext_init`** is reduced to: set up the shared library environment, then
   `start`/`stop`/`restart` the single `watcher` process (which owns mosquitto and

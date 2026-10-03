@@ -71,7 +71,7 @@ bool RKNNRetinafaceRunner::load(const ModelSpec& s) noexcept {
     std::memset(&p_->rf, 0, sizeof(p_->rf));
     
     LG_INFO("retinaface: self-test infer start (black frame %dx%d)", p_->in_w, p_->in_h);
-    int ret = inference_retinaface_model(&p_->ctx, &p_->in_img, &p_->rf);
+    int ret = inference_retinaface_model(&p_->ctx, &p_->in_img, &p_->rf, spec_.conf_threshold);
     LG_INFO("retinaface: self-test infer done ret=%d count=%d", ret, p_->rf.count);
     if (ret != 0) {
       LG_ERROR("retinaface: self-test failed; aborting load");
@@ -161,7 +161,7 @@ bool RKNNRetinafaceRunner::infer(const FrameView& in, InferenceOutputs& out) noe
   std::memset(&p_->rf, 0, sizeof(p_->rf));
 
   // ---- Run RKNN ----
-  int ret = inference_retinaface_model(&p_->ctx, &p_->in_img, &p_->rf);
+  int ret = inference_retinaface_model(&p_->ctx, &p_->in_img, &p_->rf, spec_.conf_threshold);
   if (ret != 0) {
     LG_ERROR("retinaface: inference_retinaface_model failed (%d)", ret);
     return false;

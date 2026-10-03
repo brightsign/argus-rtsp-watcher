@@ -186,7 +186,9 @@ bool RKNNYoloXRunner::infer(const FrameView& in, InferenceOutputs& out) noexcept
     // 5. Post-processes with NMS and confidence filtering
     std::memset(&p_->od_results, 0, sizeof(p_->od_results));
     
-    const float conf_threshold = BOX_THRESH;  // 0.25 from yolox.h
+    // Confidence threshold comes from the model config (hot-reloadable); defaults
+    // to the historical BOX_THRESH when the config omits it.
+    const float conf_threshold = spec_.conf_threshold;
     int ret = inference_yolox_model(&p_->ctx, &p_->in_img, &p_->od_results, conf_threshold);
     if (ret != 0) {
         LG_ERROR("RKNNYoloXRunner: inference_yolox_model failed (%d)", ret);

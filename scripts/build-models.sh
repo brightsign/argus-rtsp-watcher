@@ -20,7 +20,8 @@ if [ "${#SOCS[@]}" -eq 0 ]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TOOLKIT_DIR="${REPO_ROOT}/build/toolkit"
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/lib/cache.sh"   # sets TOOLKIT_DIR (shared cache)
 ZOO_DIR="${TOOLKIT_DIR}/rknn_model_zoo"
 TK2_DIR="${TOOLKIT_DIR}/rknn-toolkit2"
 TOOLKIT_REF="v2.3.0"

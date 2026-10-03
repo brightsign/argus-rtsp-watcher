@@ -15,7 +15,8 @@ set -euo pipefail
 OUTPUT_DIR="${1:?usage: build-mosquitto.sh <output-dir>}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SDK_ENV="${REPO_ROOT}/sdk/environment-setup-aarch64-oe-linux"
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/lib/cache.sh"   # sets SDK_ENV (shared cache)
 MOSQUITTO_VERSION="2.0.18"
 BUILD_DIR="${REPO_ROOT}/build/mosquitto-build"
 TARBALL="${REPO_ROOT}/build/mosquitto-${MOSQUITTO_VERSION}.tar.gz"

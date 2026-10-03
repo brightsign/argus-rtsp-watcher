@@ -35,7 +35,7 @@ struct ModelSpec {
 
   // Pre/post-processing hints
   bool  keep_aspect{false};
-  float conf_threshold{0.5f};
+  float conf_threshold{0.25f};
   float nms_threshold{0.45f};
 
   // NPU core affinity (for multi-core inference)

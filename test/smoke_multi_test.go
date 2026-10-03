@@ -241,7 +241,7 @@ func writeMultiWatcherJSON(t *testing.T, path string, streams []multiStreamDef) 
 
 // setupWatcherExtDir builds a self-contained extension directory for the
 // watcher binary to run from. cmd/watcher/main.go resolves every per-SoC
-// asset path (argus-engine, engine.template.json, bin/, lib/, model/)
+// asset path (argus-engine, config.json, bin/, lib/, model/)
 // relative to os.Executable()'s own directory, and the kernel resolves that
 // through /proc/self/exe to the underlying file's real location -- a
 // symlinked watcher binary would therefore report the ORIGINAL staging
@@ -260,7 +260,7 @@ func setupWatcherExtDir(t *testing.T, stagingDir, watcherBin string) string {
 		t.Fatalf("write watcher copy: %v", err)
 	}
 
-	for _, name := range []string{"argus-engine", "engine.template.json", "bin", "lib", "model"} {
+	for _, name := range []string{"argus-engine", "config.json", "bin", "lib", "model"} {
 		src := filepath.Join(stagingDir, name)
 		if _, err := os.Stat(src); err != nil {
 			t.Fatalf("staged asset missing: %s: %v", src, err)

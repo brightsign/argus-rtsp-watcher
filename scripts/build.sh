@@ -13,7 +13,7 @@ set -euo pipefail
 #   <SOC>/argus-engine           aarch64 engine (same binary in every SoC dir --
 #                                 TARGET_SOC only changes the cmake install path,
 #                                 not compiled code; see engine/CMakeLists.txt)
-#   <SOC>/engine.template.json   per-stream engine config template
+#   <SOC>/config.json   per-stream engine config template
 #   <SOC>/watcher.json           default operator config (from examples/watcher.example.json)
 #   <SOC>/image-stream-server     MJPEG preview server (built by build-image-server;
 #                                 one SoC-independent arm64 binary, staged into each SoC dir)
@@ -72,7 +72,7 @@ require_file "${MOSQUITTO_DIR}/mosquitto" "mosquitto broker (run 'make build-mos
 require_dir "${LIBS_DIR}" "harvested runtime libs (run 'make build-libs')"
 require_file "packaging/bsext_init" "bsext_init"
 require_file "packaging/make-extension-lvm" "make-extension-lvm"
-require_file "configs/engine.template.json" "engine template config"
+require_file "configs/config.json" "engine template config"
 require_file "examples/watcher.example.json" "default watcher config"
 
 echo "==> Cleaning ${STAGING_DIR}"
@@ -101,7 +101,7 @@ for soc in ${SOC_LIST}; do
     # every SoC dir). cmd/watcher/main.go's buildSpecs joins extDir with
     # previewBinary ("image-stream-server") directly, so it must land here.
     install -m 0755 "${IMAGE_SERVER_BIN}" "${soc_dir}/image-stream-server"
-    install -m 0644 configs/engine.template.json "${soc_dir}/engine.template.json"
+    install -m 0644 configs/config.json "${soc_dir}/config.json"
     install -m 0644 examples/watcher.example.json "${soc_dir}/watcher.json"
 
     # mosquitto broker + client tools (build-mosquitto) and the harvested runtime
@@ -110,7 +110,7 @@ for soc in ${SOC_LIST}; do
     cp -a "${MOSQUITTO_DIR}/." "${soc_dir}/bin/"
     cp -a "${LIBS_DIR}/." "${soc_dir}/lib/"
 
-    # engine.template.json's model_path uses the upstream filename RetinaFace.rknn
+    # config.json's model_path uses the upstream filename RetinaFace.rknn
     # (capital), so the compiled models are staged under their real names.
     install -m 0644 "${soc_models}/RetinaFace.rknn" "${soc_dir}/model/RetinaFace.rknn"
     install -m 0644 "${soc_models}/yolox_s.rknn" "${soc_dir}/model/yolox_s.rknn"

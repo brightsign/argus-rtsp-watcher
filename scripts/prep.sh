@@ -13,7 +13,8 @@ set -euo pipefail
 # and models stay compatible. Already-present files are left untouched; run
 # `make prep` after `make clean` or delete a file to re-fetch it.
 #
-# Usage: prep.sh            (uses RKNN_TAG, default v2.3.0)
+# Usage: prep.sh            fetch the files (uses RKNN_TAG, default v2.3.0)
+#        prep.sh clean      remove the fetched files (used by `make prep-clean`)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INCLUDE_DIR="${REPO_ROOT}/engine/include"
@@ -32,6 +33,22 @@ FILES=(
     "rknn_box_priors.h|${ZOO}/examples/RetinaFace/cpp/rknn_box_priors.h"
     "font.h|${ZOO}/utils/font.h"
 )
+
+# `prep.sh clean` removes exactly the files this script fetches, leaving the
+# committed headers in engine/include/ untouched. The FILES list above is the
+# single source of truth for what is ours to delete.
+if [ "${1:-}" = "clean" ]; then
+    echo "==> Removing fetched Rockchip RKNN sources from engine/include/"
+    for entry in "${FILES[@]}"; do
+        name="${entry%%|*}"
+        dest="${INCLUDE_DIR}/${name}"
+        if [ -e "${dest}" ]; then
+            rm -f "${dest}"
+            echo "    removed ${name}"
+        fi
+    done
+    exit 0
+fi
 
 fetch() {
     local url="$1" dest="$2"

@@ -16,7 +16,8 @@ set -euo pipefail
 OUTPUT_DIR="${1:?usage: build-libs.sh <output-lib-dir>}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SDK_ENV="${REPO_ROOT}/sdk/environment-setup-aarch64-oe-linux"
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/lib/cache.sh"   # sets SDK_ENV (shared cache)
 # librknnrt.so is fetched into the engine include tree by `make prep` (the engine
 # links it); it is also the NPU runtime the models load at inference time.
 RKNN_RT_LIB="${REPO_ROOT}/engine/include/librknnrt.so"
@@ -85,6 +86,45 @@ for plugin in libgstcoreelements.so libgstlibav.so libgstisomp4.so libgstplaybac
     else
         echo "WARNING: GStreamer plugin not found in SDK: ${plugin}" >&2
     fi
+done
+
+# Resolve the full runtime dependency closure and pull any still-missing library
+# from the SDK sysroot. OpenCV (imgcodecs/videoio) drags in libtiff, libjpeg,
+# libpng, libwebp, libexif, libgphoto2, liblzma, liborc, ... transitively; hand-
+# listing them is error-prone (the loader reports only the first miss, e.g.
+# "libtiff.so.5: cannot open shared object file"). Walk NEEDED entries instead and
+# bundle everything that is not part of the BrightSign base system.
+#
+# Base libs (C runtime, loader, libstdc++, libgcc) MUST come from the player, not
+# be overridden -- the engine already resolves them there, and shipping our own
+# risks loader/ABI conflicts. Everything else that lives in the sysroot is an
+# application dependency the player does not provide, so bundle it.
+is_base_lib() {
+    case "$1" in
+        ld-linux-aarch64.so.*|libc.so.*|libm.so.*|libpthread.so.*|librt.so.*|\
+        libdl.so.*|libresolv.so.*|libutil.so.*|libgcc_s.so.*|libstdc++.so.*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+so_needed() { readelf -d "$1" 2>/dev/null | grep NEEDED | grep -oP '\[\K[^\]]+'; }
+
+echo "==> Resolving runtime dependency closure from ${SYSLIB}"
+progress=1
+while [ "${progress}" = 1 ]; do
+    progress=0
+    while IFS= read -r so; do
+        for dep in $(so_needed "${so}"); do
+            is_base_lib "${dep}" && continue
+            [ -e "${OUTPUT_DIR}/${dep}" ] && continue
+            if [ -e "${SYSLIB}/${dep}" ]; then
+                cp -L "${SYSLIB}/${dep}" "${OUTPUT_DIR}/${dep}"
+                echo "    + ${dep}"
+                progress=1
+            else
+                echo "    ? ${dep} not in sysroot (assuming base system)" >&2
+            fi
+        done
+    done < <(find "${OUTPUT_DIR}" -maxdepth 2 -name '*.so*' -type f)
 done
 
 echo "==> libs -> ${OUTPUT_DIR}"

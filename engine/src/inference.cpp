@@ -550,7 +550,8 @@ InferenceResult MLInferenceThread::runInference(cv::Mat& rgb) {
 
     InferenceResult final_result{-1, -1, std::chrono::system_clock::now()};
     retinaface_result result;
-    int ret = inference_retinaface_model(&rknn_app_ctx, &image, &result);
+    // Legacy path: keep the historical face-confidence threshold (0.25).
+    int ret = inference_retinaface_model(&rknn_app_ctx, &image, &result, 0.25f);
     if (ret != 0) {
         printf("inference_retinaface_model fail! ret=%d\n", ret);
         return final_result;

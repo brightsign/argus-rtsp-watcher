@@ -49,7 +49,7 @@ int init_retinaface_model(const char *model_path, rknn_app_context_t *app_ctx, i
 
 int release_retinaface_model(rknn_app_context_t *app_ctx);
 
-int inference_retinaface_model(rknn_app_context_t *app_ctx, image_buffer_t *img, retinaface_result *out_result);
+int inference_retinaface_model(rknn_app_context_t *app_ctx, image_buffer_t *img, retinaface_result *out_result, float conf_threshold);
 
 #ifdef __cplusplus
 }

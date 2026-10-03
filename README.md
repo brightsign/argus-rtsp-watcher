@@ -363,7 +363,17 @@ The repo has **no dependency on a sibling Argus tree**. Every runtime asset is p
 
 The **RKNN headers and runtime** are not vendored: the Rockchip RKNN API headers and `librknnrt.so` are fetched from the pinned upstream (`airockchip/rknn-toolkit2` `v2.3.0`) by `make prep` into `engine/include/` (a prerequisite of the engine build), so no Rockchip-proprietary bytes live in this repo.
 
-The **cross-compile SDK** is installed by `make fetch-sdk`, which runs automatically as a prerequisite of the cross-compile targets (`build-engine`, `build-libs`, `build-mosquitto`) — so `make build` sets it up on its own, while host-only `make run-tests` stays SDK-free. It needs the BrightSign `brightsign-x86_64-cobra-toolchain-*.sh` installer: drop it at the repo root, or point to it with `make build SDK_INSTALLER=/path/to/brightsign-x86_64-cobra-toolchain-9.0.189.sh`. It installs (self-relocating, ~1.6 GB) into gitignored `./sdk`; an already-installed SDK is detected and skipped. Model compilation uses Docker to build the one-time `rknn_tk2` toolkit image. Each target guards its inputs and fails with a clear message when something is missing.
+The **cross-compile SDK**, the **RKNN toolkit clone**, and the **compiled models** live in a **shared build cache outside the repo** (default `../argus-build-cache`, parallel to this checkout; override with `ARGUS_CACHE_DIR`), so they are produced once and reused across sibling projects. Run `make cache-info` to see the resolved location and what is present.
+
+The SDK (BrightSign 9.1 series), the RKNN toolkit, and the `rknn_tk2` Docker image are **provisioned once per build box** by the separate [`brightsign-sdk-builder`](../brightsign-sdk-builder) repo, which downloads the BrightSign OS source, builds the custom SDK, and installs it into the shared cache this repo reads. Run it once from a parallel checkout:
+
+```bash
+cd ../brightsign-sdk-builder && make build
+```
+
+After that, this repo's `make build` finds the SDK already installed (and the toolkit + image present) and proceeds straight to the app build; host-only `make run-tests` stays SDK-free. If you instead already have a `brightsign-x86_64-cobra-toolchain-*.sh` installer, `make fetch-sdk` will install it from the shared cache dir, the repo root, or `make build SDK_INSTALLER=/path/to/installer.sh`. Each target guards its inputs and fails with a clear message when something is missing.
+
+To reset: `make clean` returns this checkout to a freshly-cloned state (removes `build/`, `staging/`, zips, and the fetched prep headers) while leaving the shared cache; `make cache-clean` removes the shared cache for all projects.
 
 ## Deploying to a player
 
@@ -394,7 +404,7 @@ internal/
   health/           /healthz
 engine/             lean C++ person+gaze engine (copied/adapted from Argus)
 packaging/          bsext_init + make-extension-lvm
-configs/            engine.template.json (per-stream engine config template)
+configs/            config.json (per-stream engine config template)
 examples/           example watcher.json configs (the default baked into the extension lives here)
 scripts/            build.sh, fetch-sdk.sh
 tools/              host tools: zone-picker(.sh/.html), record-frames.sh, framebox, boxstats

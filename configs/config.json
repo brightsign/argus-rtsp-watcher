@@ -14,7 +14,7 @@
     "input_size": [320, 320],
     "npu_core": -1,
     "norm": { "mean": [123.675, 116.28, 103.53], "std": [58.395, 57.12, 57.375] },
-    "conf_threshold": 0.3,
+    "conf_threshold": 0.25,
     "nms_threshold": 0.45
   },
   "secondary_models": [
@@ -24,7 +24,7 @@
       "input_size": [640, 640],
       "npu_core": -1,
       "norm": { "mean": [0, 0, 0], "std": [1, 1, 1] },
-      "conf_threshold": 0.5,
+      "conf_threshold": 0.1,
       "nms_threshold": 0.45
     }
   ],

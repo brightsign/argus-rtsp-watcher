@@ -15,6 +15,10 @@ vendor/
 /sdk
 *.rknn
 
+# BrightSign cross-compile SDK installer (large; produced by the sibling
+# extension repo and dropped here for `make fetch-sdk` -- never committed)
+/brightsign-x86_64-cobra-toolchain-*.sh
+
 # Rockchip-origin sources fetched by `make prep` (not vendored -- see scripts/prep.sh)
 /engine/include/rknn_api.h
 /engine/include/rknn_matmul_api.h

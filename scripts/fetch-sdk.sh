@@ -1,34 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Installs a self-contained BrightSign 9.0 aarch64 cross-compile SDK into
-# ./sdk (gitignored). "Self-contained" matters here: OE SDK installers bake
-# absolute paths (SDKTARGETSYSROOT, PATH, CC/CXX --sysroot=..., and even the
-# ELF INTERP/RPATH of the cross-toolchain binaries themselves) into the
-# extracted tree at install time, relocated to wherever `-d <dir>` points.
-# Symlinking in an SDK that was installed for a *different* absolute path
-# (e.g. another repo's ./sdk) silently reintroduces those stale paths and
-# breaks the build for everyone except whoever happened to have that other
-# path on disk. Always install fresh with `-d` pointed at THIS repo's ./sdk.
+# Ensures the custom BrightSign 9.1 aarch64 cross-compile SDK is available in the
+# shared build cache (CACHE_DIR/sdk -- see scripts/lib/cache.sh). The SDK is
+# provisioned once per build box by the `brightsign-sdk-builder` repo, which
+# installs it straight into the cache; this script simply detects it there. As a
+# convenience it will also install from a toolchain installer you have on hand.
 #
-# The engine's CMake build (engine/CMakeLists.txt, invoked by `make build-engine`)
-# cross-compiles for aarch64 using the toolchain and sysroots this script installs.
-# It needs:
-#   sdk/environment-setup-aarch64-oe-linux   (sets CC/CXX/OECORE_TARGET_SYSROOT/etc.)
-#   sdk/sysroots/aarch64-oe-linux            (target headers/libs: OpenCV, GStreamer, RGA, mosquitto...)
-#   sdk/sysroots/x86_64-oesdk-linux          (the aarch64-oe-linux-{gcc,g++,...} cross toolchain)
+# "Self-contained path" matters: OE SDK installers bake absolute paths
+# (SDKTARGETSYSROOT, PATH, CC/CXX --sysroot=..., and the ELF INTERP/RPATH of the
+# cross-toolchain binaries themselves) into the tree at install time, relocated to
+# wherever `-d <dir>` points. Because every project resolves the SAME absolute
+# CACHE_DIR/sdk path, one correct install serves them all; copying in an SDK
+# relocated for a different path silently breaks the build.
 #
-# This SDK is large (~1.6G extracted) and is not committed to this repo.
+# The engine's CMake build (engine/CMakeLists.txt, `make build-engine`)
+# cross-compiles for aarch64 using the toolchain + sysroots this provides:
+#   sdk/environment-setup-aarch64-oe-linux   (CC/CXX/OECORE_TARGET_SYSROOT/...)
+#   sdk/sysroots/aarch64-oe-linux            (OpenCV, GStreamer, RGA, mosquitto...)
+#   sdk/sysroots/x86_64-oesdk-linux          (the cross toolchain)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SDK_DIR="${REPO_ROOT}/sdk"
-ENV_SCRIPT="${SDK_DIR}/environment-setup-aarch64-oe-linux"
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/lib/cache.sh"   # sets SDK_DIR, SDK_ENV, CACHE_DIR
+ENV_SCRIPT="${SDK_ENV}"
 INSTALLER_GLOB="brightsign-x86_64-cobra-toolchain-*.sh"
 
-# An SDK is only usable here if it is both present AND baked for THIS repo's
-# ./sdk path (not relocated for some other checkout). A stale-path SDK fails
-# with "command not found" or "cannot execute: required file not found" when
-# the cross compiler is invoked, since its ELF INTERP points elsewhere.
+# An SDK is usable only if present AND baked for THIS cache's absolute path. A
+# stale-path SDK fails with "cannot execute: required file not found" when the
+# cross compiler is invoked, since its ELF INTERP points elsewhere.
 sdk_is_self_consistent() {
     [ -d "${SDK_DIR}/sysroots/aarch64-oe-linux" ] || return 1
     [ -f "${ENV_SCRIPT}" ] || return 1
@@ -41,14 +41,19 @@ if sdk_is_self_consistent; then
 fi
 
 if [ -e "${SDK_DIR}" ]; then
-    echo "ERROR: ${SDK_DIR} exists but is not a self-consistent SDK for this repo" >&2
+    echo "ERROR: ${SDK_DIR} exists but is not a self-consistent SDK for this cache" >&2
     echo "(its environment-setup-aarch64-oe-linux does not reference ${SDK_DIR})." >&2
-    echo "Remove it and re-run this script to install fresh: rm -rf ${SDK_DIR}" >&2
+    echo "Remove it and re-run to install fresh: rm -rf ${SDK_DIR}" >&2
     exit 1
 fi
 
-# Prefer an installer passed as $1, else look for one in the repo root or CWD.
+# Install from a toolchain installer if one is on hand: $1, else the shared cache
+# dir, else the repo root, else CWD.
 INSTALLER="${1:-}"
+if [ -z "${INSTALLER}" ]; then
+    # shellcheck disable=SC2086
+    INSTALLER="$(ls ${CACHE_DIR}/${INSTALLER_GLOB} 2>/dev/null | head -n1 || true)"
+fi
 if [ -z "${INSTALLER}" ]; then
     # shellcheck disable=SC2086
     INSTALLER="$(ls ${REPO_ROOT}/${INSTALLER_GLOB} 2>/dev/null | head -n1 || true)"
@@ -59,31 +64,25 @@ if [ -z "${INSTALLER}" ]; then
 fi
 
 if [ -z "${INSTALLER}" ] || [ ! -f "${INSTALLER}" ]; then
-    cat <<'EOF'
-Could not find a BrightSign aarch64 SDK installer.
+    cat <<EOF
+No cross-compile SDK found in the shared cache, and no toolchain installer on hand.
 
-This script needs brightsign-x86_64-cobra-toolchain-<version>.sh, the BrightSign
-9.0 SDK installer built by the argus-audience-measurement-extension repo's
-scripts/runall.sh (step0_setup), which:
-  1. downloads the BrightSign OS 9.0 source tarballs,
-  2. builds them in a container (bsoe-build) with `MACHINE=cobra ./bsbb brightsign-sdk`,
-  3. produces brightsign-x86_64-cobra-toolchain-<version>.sh under
-     brightsign-oe/build/tmp-glibc/deploy/sdk/.
+The SDK is provisioned once per build box by the brightsign-sdk-builder repo,
+which downloads the BrightSign OS source, builds the custom SDK, and installs it
+into the shared cache this repo reads. From a checkout parallel to this one:
 
-If you already have that installer, do one of:
-  - Run this script again with the installer path as an argument:
-      scripts/fetch-sdk.sh /path/to/brightsign-x86_64-cobra-toolchain-9.0.189.sh
-  - Place the installer .sh file at the repo root and re-run this script.
+    cd ../brightsign-sdk-builder && make build
 
-Do NOT symlink or copy in an already-extracted sdk/ directory from another
-checkout (e.g. argus-audience-measurement-extension/sdk) -- that SDK's
-absolute paths were relocated for THAT repo's location, not this one, and
-will fail (or silently depend on that other checkout still existing at its
-exact path). Always run the installer with -d pointed at this repo's ./sdk
-so the OE relocation step bakes the right path in.
+That populates ${SDK_DIR}. Then re-run this build.
 
-See ../argus-audience-measurement-extension/scripts/runall.sh (step0_setup) for
-how the installer itself is produced.
+Alternatively, if you already have a brightsign-x86_64-cobra-toolchain-*.sh
+installer, install from it directly:
+    - pass its path:  make fetch-sdk SDK_INSTALLER=/path/to/installer.sh
+    - or drop it in the shared cache dir (see 'make cache-info') or the repo root.
+
+Do NOT symlink or copy in an already-extracted sdk/ directory relocated for a
+different path -- its baked paths will fail. Always install with -d pointed at the
+shared cache path so OE relocation bakes the right path in.
 EOF
     exit 1
 fi

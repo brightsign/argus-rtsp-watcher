@@ -12,8 +12,9 @@
 
 // Optimized for small/distant faces with 320x320 model
 #define NMS_THRESHOLD 0.5    // Relaxed for crowded scenes
-#define CONF_THRESHOLD 0.10  // EXTREME: Very low threshold for 1080p distant faces (may get false positives)
-#define VIS_THRESHOLD 0.25  // Lowered from 0.4 to pass slightly angled/non-frontal faces
+// Face confidence threshold now comes from the model config (conf_threshold),
+// passed into inference_retinaface_model and applied as both the candidate
+// pre-filter and the final keep threshold.
 
 static int clamp(int x, int min, int max) {
     if (x > max) return max;
@@ -132,7 +133,7 @@ static int filterValidResult(float *scores, float *loc, float *landms, const flo
     return validCount;
 }
 
-static int post_process_retinaface(rknn_app_context_t *app_ctx, image_buffer_t *src_img, rknn_output outputs[], retinaface_result *result, letterbox_t *letter_box) {
+static int post_process_retinaface(rknn_app_context_t *app_ctx, image_buffer_t *src_img, rknn_output outputs[], retinaface_result *result, letterbox_t *letter_box, float conf_threshold) {
     float *location = (float *)outputs[0].buf;
     float *scores = (float *)outputs[1].buf;
     float *landms = (float *)outputs[2].buf;
@@ -159,7 +160,7 @@ static int post_process_retinaface(rknn_app_context_t *app_ctx, image_buffer_t *
     memset(props, 0, sizeof(float)*num_priors);
 
     int validCount = filterValidResult(scores, location, landms, prior_ptr, app_ctx->model_height, app_ctx->model_width,
-                                       filter_indices, props, CONF_THRESHOLD, num_priors);
+                                       filter_indices, props, conf_threshold, num_priors);
 
     quick_sort_indice_inverse(props, 0, validCount - 1, filter_indices);
     nms(validCount, location, filter_indices, NMS_THRESHOLD, src_img->width, src_img->height);
@@ -172,7 +173,7 @@ static int post_process_retinaface(rknn_app_context_t *app_ctx, image_buffer_t *
             printf("Warning: detected more than 128 faces, can not handle that");
             break;
         }
-        if (filter_indices[i] == -1 || props[i] < VIS_THRESHOLD) {
+        if (filter_indices[i] == -1 || props[i] < conf_threshold) {
             continue;
         }
 
@@ -335,7 +336,7 @@ int release_retinaface_model(rknn_app_context_t *app_ctx) {
     return 0;
 }
 
-int inference_retinaface_model(rknn_app_context_t *app_ctx, image_buffer_t *src_img, retinaface_result *out_result) {
+int inference_retinaface_model(rknn_app_context_t *app_ctx, image_buffer_t *src_img, retinaface_result *out_result, float conf_threshold) {
     int ret;
     letterbox_t letter_box;
     rknn_input inputs[1];
@@ -389,7 +390,7 @@ int inference_retinaface_model(rknn_app_context_t *app_ctx, image_buffer_t *src_
         return -1;
     }
 
-    ret = post_process_retinaface(app_ctx, src_img, outputs, out_result, &letter_box);
+    ret = post_process_retinaface(app_ctx, src_img, outputs, out_result, &letter_box, conf_threshold);
     if (ret < 0) {
         printf("post_process_retinaface fail! ret=%d\n", ret);
         return -1;

@@ -1,0 +1,97 @@
+{
+  "_generic_config_notes": {
+    "purpose": "One config schema shared by the Argus engine family (argus-rtsp-watcher, argus-audience-measurement-extension). Both engines use the same configuration.cpp parser: missing fields fall back to defaults, and unknown fields (including every _comment/_notes key here) are ignored. So a project simply ignores the fields it does not use.",
+    "usage": "Copy this as each project's config source (config.json for argus-rtsp-watcher, which the Go watcher expands per-stream; argus-config.json for argus-audience-measurement-extension). Then set the handful of per-deployment VALUES noted below.",
+    "per_project_values": "input_source, model conf_threshold/npu_core, employee_detection.enabled, and input URLs/paths differ per project or per site. The schema is shared; these values are not.",
+    "model_files": "All projects ship model/RetinaFace.rknn and model/yolox_s.rknn (exact case). Always use that case in model_path.",
+    "zone": "argus-rtsp-watcher injects a per-stream 'zone' object at config-generation time; do not set it here."
+  },
+
+  "_comment_input_source": "Which input to use: 'rtsp', 'usb', or 'file'. argus-rtsp-watcher is rtsp (one engine per stream); AME commonly uses usb.",
+  "input_source": "rtsp",
+
+  "_comment_device_id": "Device identifier for MQTT messages. Empty = auto-detect from MAC address.",
+  "device_id": "",
+
+  "input": {
+    "rtsp_url": "",
+    "usb_device": "/dev/video0",
+    "file_path": "",
+    "usb":  { "width": 640, "height": 480, "fps": 30 },
+    "rtsp": { "latency_ms": 100 },
+    "file": { "loop": true }
+  },
+
+  "_comment_input_source_priority": "'config' = read input from this file; 'registry' = read from the BrightSign registry. CLI args always win.",
+  "input_source_priority": "config",
+
+  "primary_model": {
+    "name": "retinaface",
+    "model_path": "model/RetinaFace.rknn",
+    "input_size": [320, 320],
+    "npu_core": -1,
+    "norm": { "mean": [123.675, 116.28, 103.53], "std": [58.395, 57.12, 57.375] },
+    "_comment_conf_threshold": "Face confidence 0..1. Higher = fewer false positives. argus-rtsp-watcher default 0.25; AME historically 0.3.",
+    "conf_threshold": 0.25,
+    "nms_threshold": 0.45
+  },
+
+  "secondary_models": [
+    {
+      "name": "yolox",
+      "model_path": "model/yolox_s.rknn",
+      "input_size": [640, 640],
+      "npu_core": -1,
+      "norm": { "mean": [0, 0, 0], "std": [1, 1, 1] },
+      "_comment_conf_threshold": "Person confidence 0..1. argus-rtsp-watcher default 0.1 (sensitive); AME historically 0.5.",
+      "conf_threshold": 0.1,
+      "nms_threshold": 0.45
+    }
+  ],
+
+  "processing": { "th": { "score": 0.5, "iou": 0.45 }, "nms_max_dets": 100 },
+
+  "_comment_npu_core": "-1 = auto (runner picks cores). AME pins cores explicitly (primary 0, employee 2) on multi-core parts; single-core parts (RK3568) only have core 0.",
+  "runtime": { "target_fps": 10, "heartbeat_ms": 1000 },
+
+  "publishers": [
+    {
+      "kind": "mqtt",
+      "mqtt": {
+        "host": "localhost",
+        "port": 1883,
+        "topic": "bs/argus/analytics",
+        "qos": 0,
+        "retain": false,
+        "period_ms": 1000
+      }
+    }
+  ],
+
+  "log_level": "info",
+  "log_dir": "/tmp",
+  "log_json": true,
+
+  "enable_frame_output": false,
+  "enable_frame_stamp": true,
+  "output_dir": "/tmp",
+
+  "_comment_privacy": "Optional person/face blurring in output frames. Ignored where frame output is off.",
+  "blur_faces": false,
+  "blur_method": "gaussian",
+  "blur_intensity": 71,
+
+  "_comment_flip_horizontal": "Mirror the frame horizontally (useful for front-facing USB cameras).",
+  "flip_horizontal": false,
+
+  "_comment_employee_detection": "AME-only feature (MobileNetV3 vest/logo classifier). argus-rtsp-watcher ignores it. Set enabled=true and provide the model only where used.",
+  "employee_detection": {
+    "enabled": false,
+    "model_path": "model/Mobilenetv3_small.rknn",
+    "npu_core": 2
+  },
+
+  "_comment_test_modes": "Run a single model for debugging. Both false = production (both models).",
+  "test_face_only": false,
+  "test_yolo_only": false
+}

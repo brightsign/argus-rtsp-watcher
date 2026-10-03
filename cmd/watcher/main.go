@@ -68,7 +68,7 @@ func main() {
 			len(w.Streams), tier.SafeStreams, tier.Model)
 	}
 
-	tpl, err := os.ReadFile(filepath.Join(extDir, "engine.template.json"))
+	tpl, err := os.ReadFile(filepath.Join(extDir, "config.json"))
 	if err != nil {
 		log.Fatalf("read template: %v", err)
 	}

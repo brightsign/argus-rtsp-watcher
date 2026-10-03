@@ -8,11 +8,27 @@ ENGINE_TEST_BIN := $(ENGINE_TEST_BUILD_DIR)/tests/run_engine_tests
 IMAGE_SERVER_BIN := build/image-stream-server
 MOSQUITTO_DIR := build/mosquitto
 LIBS_DIR := build/libs
-MODELS_DIR := build/models
-SDK_ENV := sdk/environment-setup-aarch64-oe-linux
 # Optional: path to the BrightSign cobra toolchain installer. If empty, fetch-sdk
-# searches the repo root / CWD for brightsign-x86_64-cobra-toolchain-*.sh.
+# searches the shared cache dir / repo root / CWD for
+# brightsign-x86_64-cobra-toolchain-*.sh.
 SDK_INSTALLER ?=
+
+# Shared build cache (SDK + RKNN toolkit clone + compiled models) lives OUTSIDE
+# the repo so it is downloaded/built once and reused across projects. Override
+# the location with ARGUS_CACHE_DIR (default: ../argus-build-cache, parallel to
+# this repo). scripts/lib/cache.sh is the single source of truth -- the shell-outs
+# below ask it for the resolved absolute paths so Make and the scripts agree.
+# ARGUS_CACHE_DIR is forwarded explicitly: a command-line override is a Make
+# variable, not an env var, so $(shell ...) would not otherwise see it.
+CACHE_SH := ARGUS_CACHE_DIR='$(ARGUS_CACHE_DIR)' bash scripts/lib/cache.sh print
+CACHE_DIR := $(shell $(CACHE_SH) cache)
+SDK_DIR := $(shell $(CACHE_SH) sdk)
+SDK_ENV := $(shell $(CACHE_SH) sdk-env)
+TOOLKIT_DIR := $(shell $(CACHE_SH) toolkit)
+MODELS_DIR := $(shell $(CACHE_SH) models)
+# Ensure the recipe scripts (which source cache.sh themselves) resolve the same
+# location, including when ARGUS_CACHE_DIR was given on the command line.
+export ARGUS_CACHE_DIR
 
 # Packaging: the engine, mosquitto broker, runtime libs, and image-stream-server
 # are all generic aarch64 (same for every SoC), so each is built once and staged
@@ -37,7 +53,7 @@ build: package       ## Build watcher + engine, stage all SoCs, and package -> z
 prep:                ## Fetch the Rockchip-origin RKNN headers + runtime into engine/include/ (needs network; not vendored)
 	bash scripts/prep.sh
 
-fetch-sdk:           ## Install the aarch64 cross-compile SDK into ./sdk (needs the cobra toolchain installer; pass SDK_INSTALLER=/path or drop it at the repo root)
+fetch-sdk:           ## Install the aarch64 cross-compile SDK into the shared cache (needs the cobra toolchain installer; pass SDK_INSTALLER=/path or drop it in the cache dir / repo root)
 	bash scripts/fetch-sdk.sh $(SDK_INSTALLER)
 
 build-watcher:       ## Cross-compile the Go watcher for arm64
@@ -52,12 +68,12 @@ build-mosquitto: fetch-sdk ## Cross-compile the mosquitto broker + harvest clien
 build-libs: prep fetch-sdk ## Harvest the aarch64 runtime libraries (OpenCV/GStreamer/RGA/RKNN/...) from the SDK sysroot
 	bash scripts/build-libs.sh $(CURDIR)/$(LIBS_DIR)
 
-build-models:        ## Compile the RKNN models per SoC from upstream ONNX (needs docker + ~10GB + network)
-	bash scripts/build-models.sh $(CURDIR)/$(MODELS_DIR) $(SOC_LIST)
+build-models:        ## Compile the RKNN models per SoC from upstream ONNX into the shared cache (needs docker + ~10GB + network)
+	bash scripts/build-models.sh $(MODELS_DIR) $(SOC_LIST)
 
 build-engine: prep fetch-sdk ## Cross-compile the C++ engine for TARGET_SOC (default rk3588)
 	mkdir -p $(ENGINE_BUILD_DIR)
-	bash -c 'source $(CURDIR)/$(SDK_ENV) && \
+	bash -c 'source $(SDK_ENV) && \
 		cmake -S $(CURDIR)/engine -B $(CURDIR)/$(ENGINE_BUILD_DIR) \
 			-DOECORE_TARGET_SYSROOT="$$OECORE_TARGET_SYSROOT" \
 			-DTARGET_SOC=$(TARGET_SOC) -DBUILD_TESTS=OFF && \
@@ -75,7 +91,7 @@ package: build-watcher build-engine build-image-server build-mosquitto build-lib
 	SOC_LIST="$(SOC_LIST)" STAGING_DIR="$(STAGING_DIR)" \
 		WATCHER_BIN="$(CURDIR)/$(WATCHER_BIN)" ENGINE_BIN="$(CURDIR)/$(ENGINE_BIN)" \
 		IMAGE_SERVER_BIN="$(CURDIR)/$(IMAGE_SERVER_BIN)" \
-		MOSQUITTO_DIR="$(CURDIR)/$(MOSQUITTO_DIR)" LIBS_DIR="$(CURDIR)/$(LIBS_DIR)" MODELS_DIR="$(CURDIR)/$(MODELS_DIR)" \
+		MOSQUITTO_DIR="$(CURDIR)/$(MOSQUITTO_DIR)" LIBS_DIR="$(CURDIR)/$(LIBS_DIR)" MODELS_DIR="$(MODELS_DIR)" \
 		EXT_NAME="$(EXT_NAME)" DEV_ZIP="$(DEV_ZIP)" EXT_ZIP="$(EXT_ZIP)" \
 		scripts/build.sh
 
@@ -87,7 +103,25 @@ run-tests: run-engine-tests ## Run all Go tests + engine unit tests
 run-integration-tests: ## Run hardware/engine integration tests (needs `make build` staged assets; skips cleanly off-target)
 	$(GO) test -tags integration -v ./test/...
 
-clean:               ## Remove build artifacts
+clean:               ## Remove this repo's build artifacts (build/, staging/, zips, fetched prep headers); leaves the shared cache
 	rm -rf build staging *.zip
+	bash scripts/prep.sh clean 2>/dev/null || true
+	@echo "Note: the shared build cache is left intact ($(CACHE_DIR))."
+	@echo "      Run 'make cache-clean' to remove it (affects all projects)."
 
-.PHONY: help build prep fetch-sdk build-watcher build-image-server build-mosquitto build-libs build-models build-engine build-engine-tests run-engine-tests package test run-tests run-integration-tests clean
+cache-info:          ## Show the resolved shared-cache location and what is present
+	@echo "ARGUS_CACHE_DIR : $(if $(ARGUS_CACHE_DIR),$(ARGUS_CACHE_DIR) (override),(unset -> default))"
+	@echo "cache   : $(CACHE_DIR)"
+	@echo "sdk     : $(SDK_DIR)  [$(if $(wildcard $(SDK_ENV)),present,absent)]"
+	@echo "toolkit : $(TOOLKIT_DIR)  [$(if $(wildcard $(TOOLKIT_DIR)),present,absent)]"
+	@echo "models  : $(MODELS_DIR)  [$(if $(wildcard $(MODELS_DIR)),present,absent)]"
+	@docker image inspect rknn_tk2 >/dev/null 2>&1 \
+		&& echo "docker  : rknn_tk2 image  [present]" \
+		|| echo "docker  : rknn_tk2 image  [absent]"
+
+cache-clean:         ## Remove the ENTIRE shared build cache (SDK + toolkit + models) -- AFFECTS ALL PROJECTS using it
+	@echo "Removing the shared cache used by every project: $(CACHE_DIR)"
+	rm -rf "$(CACHE_DIR)"
+	@echo "Shared cache removed. The rknn_tk2 Docker image is left intact; remove it with: docker rmi rknn_tk2"
+
+.PHONY: help build prep cache-info cache-clean fetch-sdk build-watcher build-image-server build-mosquitto build-libs build-models build-engine build-engine-tests run-engine-tests package test run-tests run-integration-tests clean
