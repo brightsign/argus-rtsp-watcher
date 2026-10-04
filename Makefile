@@ -130,8 +130,11 @@ copy:                ## scp the most recent *.zip to the player (needs BS_PLAYER
 	@# shell; legacy SCP (-O) runs `scp -t` through that REPL and fails with
 	@# "Unknown command: -c scp -t". Default scp uses the SFTP subsystem, which
 	@# dropbear serves independently of the REPL, so it works.
-	sshpass -p "$(BS_PASSWORD)" scp -p -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$(ZIP)" $(wildcard $(INSTALL_HELPER)) "$(PLAYER_USER)@$(BS_PLAYER):$(PLAYER_DEST)/"
-	@echo "Copied. On the player's root shell (Ctrl-C,Enter -> exit -> exit), run:  sh $(PLAYER_DEST)/$(INSTALL_HELPER)   (reboots on success; stays in the shell on failure)"
+	@# No `scp -p`: /storage/sd is a FAT mount, so the post-transfer fsetstat fails
+	@# with "remote fsetstat: Permission denied". The leading `sshpass -p` is the
+	@# password flag, unrelated. &&-chained so a real transfer failure fails `make copy`.
+	sshpass -p "$(BS_PASSWORD)" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$(ZIP)" $(wildcard $(INSTALL_HELPER)) "$(PLAYER_USER)@$(BS_PLAYER):$(PLAYER_DEST)/" && \
+		echo "Copied. On the player's root shell (Ctrl-C,Enter -> exit -> exit), run:  sh $(PLAYER_DEST)/$(INSTALL_HELPER)   (reboots on success; stays in the shell on failure)"
 
 cache-info:          ## Show the resolved shared-cache location and what is present
 	@echo "ARGUS_CACHE_DIR : $(if $(ARGUS_CACHE_DIR),$(ARGUS_CACHE_DIR) (override),(unset -> default))"
