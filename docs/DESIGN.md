@@ -266,7 +266,7 @@ From `VISION.md`, enforced as a startup capacity warning:
 | Platform | SoC | NPU | Safe capacity (person + gaze) |
 |----------|-----|-----|-------------------------------|
 | XT5 | RK3588 | 3-core, 6 TOPS | 3 streams @ 5–10 fps (primary; headroom for more) |
-| XS156 | RK3576 | 2-core, 4 TOPS | 2–3 streams @ 5–10 fps (validate) |
+| XS6/XD6 | RK3576 | 2-core, 4 TOPS | 2–3 streams @ 5–10 fps (validate) |
 | LS5 / HS5 | RK3568 | 1-core, 1 TOPS | 1 stream (multi-stream not supported at target fps) |
 
 Rationale: 3 streams @ 10 fps = ~60 inferences/s, the same total NPU rate a single
@@ -319,7 +319,7 @@ Test-driven where practical; hardware-independent logic is fully unit-tested.
 - **Integration**: end-to-end run using `input_file` (looped test video) driving
   the real engine through the watcher, asserting per-stream MQTT output on
   distinct topics. Runs in CI without cameras or NPU where the runtime allows;
-  hardware-in-the-loop validation on XT5/XS156 for throughput and stability.
+  hardware-in-the-loop validation on XT5/XS6/XD6 for throughput and stability.
 
 Per project rules, tests are never skipped or stubbed to pass; only a human may
 disable a test.
@@ -330,7 +330,7 @@ Resolved during implementation; none change the design's shape:
 
 - **Per-tier RAM footprint.** N engine processes load model weights N times.
   Measure actual footprint on each tier and confirm headroom for the safe stream
-  counts; if XS156 RAM is tight at 3 streams, that lowers its documented capacity.
+  counts; if XS6/XD6 RAM is tight at 3 streams, that lowers its documented capacity.
 - **RKNN all-core behavior under contention.** Validate that
   `RKNN_NPU_CORE_0_1_2` scheduling across N processes achieves the expected
   per-stream fps without starvation; if not, revisit with a watcher-side core

@@ -65,7 +65,7 @@ The **watcher** is a small Go supervisor. It discovers `watcher.json`, renders o
 | Player | SoC | NPU | Streams (person + gaze) |
 |--------|-----|-----|-------------------------|
 | **XT5** | RK3588 | 3-core, 6 TOPS | 3 @ 5–10 fps (primary target) |
-| **XS156** | RK3576 | 2-core, 4 TOPS | 2–3 @ 5–10 fps (validate) |
+| **XS6/XD6** | RK3576 | 2-core, 4 TOPS | 2–3 @ 5–10 fps (validate) |
 | **LS5 / HS5** | RK3568 | 1-core, 1 TOPS | 1 stream (multi-stream not supported at target fps) |
 
 Configuring more streams than a tier's capacity is a startup warning, not a failure.
@@ -377,10 +377,31 @@ To reset: `make clean` returns this checkout to a freshly-cloned state (removes 
 
 ## Deploying to a player
 
-Copy the extension zip to the player, then install it from the player's root Linux shell:
+### Copy the zip with `make copy`
+
+Set the target player once in a local `.envrc` (gitignored — it holds a password):
 
 ```sh
-scp argus-rtsp-watcher-ext-<ts>.zip brightsign@<player-ip>:/storage/sd/
+cp envrc-example .envrc
+$EDITOR .envrc          # set BS_PLAYER (host/ip) and BS_PASSWORD (SSH password)
+direnv allow            # or without direnv:  set -a; . ./.envrc; set +a
+```
+
+Then push the most recently built zip to the player's SD card:
+
+```sh
+make copy               # scp's the newest *.zip to /storage/sd/ on $BS_PLAYER
+make copy ZIP=argus-rtsp-watcher-ext-<ts>.zip   # or target a specific zip
+```
+
+`make copy` needs `sshpass` on your host (`sudo apt install sshpass`) and connects as
+user `brightsign`. It prints the follow-on install command when done.
+
+### Install on the player
+
+After copying, install it from the player's root Linux shell:
+
+```sh
 # SSH in and descend to the root shell (Ctrl-C, Enter -> exit -> exit on a dev player), then:
 cd /usr/local
 unzip -o /storage/sd/argus-rtsp-watcher-ext-<ts>.zip

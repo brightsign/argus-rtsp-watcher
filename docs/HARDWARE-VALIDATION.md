@@ -28,7 +28,7 @@ automatable in CI.
   `/healthz` 9200) with no override, so a leaked prior instance will make the
   new one fail to bind rather than cleanly replace it.
 - Have 3 RTSP cameras (or an RTSP re-streamer) reachable from the player's
-  network for the XT5 pass; 2-3 for XS156; 1 for RK3568/LS5/HS5.
+  network for the XT5 pass; 2-3 for XS6/XD6; 1 for RK3568/LS5/HS5.
 
 ## 1. Install and configure (per device under test)
 
@@ -38,7 +38,7 @@ automatable in CI.
    specific to this BrightSign OS version.
 2. Write `watcher.json` to `/storage/sd/watcher.json` (or
    `/storage/sd/configs/watcher.json`) with the tier's stream count (3 for
-   XT5, 2-3 for XS156, 1 for RK3568), each entry pointing at a real
+   XT5, 2-3 for XS6/XD6, 1 for RK3568), each entry pointing at a real
    `rtsp_url` — see `examples/watcher.example.json` for the shape.
 3. Start (or restart) the extension and confirm in the log that it found
    your config: `using config /storage/sd/watcher.json` (not the packaged
@@ -92,7 +92,7 @@ YOLOX), so footprint scales with stream count, not amortized.
 ## 5. Repeat per tier
 
 - [ ] **XT5 (RK3588):** 3 streams, all of §2-§4 above.
-- [ ] **XS156 (RK3576):** 2-3 streams, all of §2-§4 above. DESIGN.md §9 marks
+- [ ] **XS6/XD6 (RK3576):** 2-3 streams, all of §2-§4 above. DESIGN.md §9 marks
       this tier's capacity as "validate" — record whether 3 streams actually
       sustains 5-10 fps here or whether 2 is the real safe number.
 - [ ] **RK3568 (LS5/HS5):** 1 stream, §2-§4 above (multi-stream is not

@@ -65,7 +65,7 @@ func TierFor(soc SoC) Tier {
 	case RK3588:
 		return Tier{SoC: RK3588, Model: "XT5", SafeStreams: multiStreamCapacity}
 	case RK3576:
-		return Tier{SoC: RK3576, Model: "XS156", SafeStreams: multiStreamCapacity}
+		return Tier{SoC: RK3576, Model: "XS6/XD6", SafeStreams: multiStreamCapacity}
 	case RK3568:
 		return Tier{SoC: RK3568, Model: "LS5/HS5", SafeStreams: singleStreamCapacity}
 	default:

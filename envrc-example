@@ -1,0 +1,11 @@
+# Example deploy settings for `make copy`.
+# Copy this to .envrc and fill in your target player. .envrc is gitignored
+# (it holds a password) -- never commit it.
+#
+# Activate with direnv:   direnv allow
+# Or without direnv:      set -a; . ./.envrc; set +a
+#
+# BS_PLAYER   target player hostname or IP
+# BS_PASSWORD SSH password for the player (user: brightsign)
+export BS_PLAYER=player.example.local
+export BS_PASSWORD=changeme

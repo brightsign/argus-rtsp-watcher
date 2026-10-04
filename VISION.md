@@ -214,7 +214,7 @@ at startup and warns when the configured stream count exceeds the safe capacity.
 | Platform | SoC | NPU | Target Capacity (person + gaze) |
 |----------|-----|-----|---------------------------------|
 | **XT5** | RK3588 | 3-core, 6 TOPS | **3 streams @ 5–10 fps** (primary target; headroom for more) |
-| **XS156** | RK3576 | 2-core, 4 TOPS | **2–3 streams @ 5–10 fps** (feasible; requires validation) |
+| **XS6/XD6** | RK3576 | 2-core, 4 TOPS | **2–3 streams @ 5–10 fps** (feasible; requires validation) |
 | **LS5 / HS5** | RK3568 | 1-core, 1 TOPS | **1 stream** (multi-stream not supported at target fps) |
 
 RK3568 is supported only as a **single-stream** device; the Watcher runs and
@@ -318,7 +318,7 @@ The project succeeds when, on an **XT5 (RK3588)** player:
    starvation, no dropped-stream drift) within the player's resource budget.
 5. Deployment follows standard Argus extension install conventions.
 
-Secondary: the same behavior is validated on **XS156 (RK3576)** for 2–3 streams,
+Secondary: the same behavior is validated on **XS6/XD6 (RK3576)** for 2–3 streams,
 and **LS5/HS5 (RK3568)** is confirmed to run cleanly as a single-stream device.
 
 ---

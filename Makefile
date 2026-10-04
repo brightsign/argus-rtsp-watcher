@@ -43,6 +43,13 @@ BUILD_TS := $(shell date +%s)
 DEV_ZIP := argus-rtsp-watcher-$(BUILD_TS).zip
 EXT_ZIP := argus-rtsp-watcher-ext-$(BUILD_TS).zip
 
+# Deploy helper: `make copy` scp's the most recent *.zip to a target player.
+# Set BS_PLAYER (host/ip) and BS_PASSWORD (SSH password) in .envrc (gitignored;
+# see envrc-example). Override the file to copy with ZIP=<path>.
+PLAYER_USER ?= brightsign
+PLAYER_DEST ?= /storage/sd
+ZIP ?= $(shell ls -t *.zip 2>/dev/null | head -n1)
+
 .DEFAULT_GOAL := help
 
 help:                ## Print available targets
@@ -109,6 +116,19 @@ clean:               ## Remove this repo's build artifacts (build/, staging/, zi
 	@echo "Note: the shared build cache is left intact ($(CACHE_DIR))."
 	@echo "      Run 'make cache-clean' to remove it (affects all projects)."
 
+copy:                ## scp the most recent *.zip to the player (needs BS_PLAYER + BS_PASSWORD; override ZIP=<path>)
+	@test -n "$(BS_PLAYER)" || { echo "ERROR: BS_PLAYER not set -- copy envrc-example to .envrc and fill it in (then 'direnv allow' or 'source .envrc')"; exit 1; }
+	@test -n "$(BS_PASSWORD)" || { echo "ERROR: BS_PASSWORD not set -- see envrc-example"; exit 1; }
+	@test -n "$(ZIP)" || { echo "ERROR: no *.zip found in repo root -- run 'make build' first"; exit 1; }
+	@command -v sshpass >/dev/null 2>&1 || { echo "ERROR: sshpass not installed -- 'sudo apt install sshpass'"; exit 1; }
+	@echo "Copying $(ZIP) -> $(PLAYER_USER)@$(BS_PLAYER):$(PLAYER_DEST)/"
+	@# NOTE: no `scp -O`. The player's SSH login is the BrightSign REPL, not a Unix
+	@# shell; legacy SCP (-O) runs `scp -t` through that REPL and fails with
+	@# "Unknown command: -c scp -t". Default scp uses the SFTP subsystem, which
+	@# dropbear serves independently of the REPL, so it works.
+	sshpass -p "$(BS_PASSWORD)" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$(ZIP)" "$(PLAYER_USER)@$(BS_PLAYER):$(PLAYER_DEST)/"
+	@echo "Copied. On the player: cd /usr/local && unzip -o $(PLAYER_DEST)/$(notdir $(ZIP)) && bash ./ext_$(EXT_NAME)_install-lvm.sh && reboot"
+
 cache-info:          ## Show the resolved shared-cache location and what is present
 	@echo "ARGUS_CACHE_DIR : $(if $(ARGUS_CACHE_DIR),$(ARGUS_CACHE_DIR) (override),(unset -> default))"
 	@echo "cache   : $(CACHE_DIR)"
@@ -124,4 +144,4 @@ cache-clean:         ## Remove the ENTIRE shared build cache (SDK + toolkit + mo
 	rm -rf "$(CACHE_DIR)"
 	@echo "Shared cache removed. The rknn_tk2 Docker image is left intact; remove it with: docker rmi rknn_tk2"
 
-.PHONY: help build prep cache-info cache-clean fetch-sdk build-watcher build-image-server build-mosquitto build-libs build-models build-engine build-engine-tests run-engine-tests package test run-tests run-integration-tests clean
+.PHONY: help build prep copy cache-info cache-clean fetch-sdk build-watcher build-image-server build-mosquitto build-libs build-models build-engine build-engine-tests run-engine-tests package test run-tests run-integration-tests clean
