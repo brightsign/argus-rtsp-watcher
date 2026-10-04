@@ -12,6 +12,7 @@ vendor/
 /build/
 /staging/
 *.zip
+/install-on-player.sh
 /sdk
 *.rknn
 
