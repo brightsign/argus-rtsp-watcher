@@ -28,7 +28,7 @@ in `VISION.md` and not repeated here except where they constrain implementation.
 ```mermaid
 flowchart TD
     BI["bsext_init start"] --> W["watcher (Go supervisor)"]
-    CFG["watcher.json<br/>(streams list)"] --> W
+    CFG["config.json<br/>(streams list)"] --> W
     TPL["config.json"] --> W
     W -->|render + spawn| E1["engine #1 (cam1)"]
     W -->|render + spawn| E2["engine #2 (cam2)"]
@@ -58,7 +58,7 @@ argus-rtsp-watcher/
   cmd/
     watcher/                   # Go supervisor entry point (main.go)
   internal/                    # Go supervisor packages
-    config/                    # watcher.json load + discovery order + validation
+    config/                    # config.json load + discovery order + validation
     configgen/                 # render config.json -> per-instance configs
     supervisor/                # child lifecycle, process groups, restart/backoff
     health/                    # /healthz endpoint + structured health log
@@ -72,7 +72,7 @@ argus-rtsp-watcher/
   configs/
     config.json       # per-instance engine config template
   examples/
-    watcher.example.json       # example streams list (default baked into the extension)
+    config.example.json       # example streams list (default baked into the extension)
   scripts/
     build.sh                   # cross-compile orchestration, invoked by Makefile
   test/                        # integration tests (file-input based)
@@ -148,7 +148,7 @@ no engine code changes.
 
 Two files with a clean separation of concerns:
 
-### 5.1 `watcher.json` (operator-facing)
+### 5.1 `config.json` (operator-facing)
 
 The only file a field technician edits. Lists the streams and global options.
 
@@ -174,14 +174,14 @@ template (e.g. thresholds).
 A full engine config with placeholders, rarely edited. Keeps all engine knobs in
 one place. Placeholders are substituted per stream during config generation.
 
-### 5.3 `watcher.json` discovery order
+### 5.3 `config.json` discovery order
 
 First found wins; there is no CLI/env override:
 
-1. `/storage/sd/watcher.json`
-2. `/storage/sd/configs/watcher.json`
-3. `/storage/ssd/watcher.json`
-4. `/storage/ssd/configs/watcher.json`
+1. `/storage/sd/configs/config.json`
+2. `/storage/sd/config.json`
+3. `/storage/ssd/configs/config.json`
+4. `/storage/ssd/config.json`
 5. package default (extension directory)
 
 SD/SSD are the field-editable locations, so an inserted card wins over the
@@ -244,7 +244,7 @@ Each engine is launched with an isolated environment:
 
 ### 7.4 Live reconciliation
 
-On `watcher.json` change, the watcher reconciles running children against the new
+On `config.json` change, the watcher reconciles running children against the new
 desired set: add a stream → spawn it; remove one → stop it; change a stream's URL
 or settings → restart just that engine. Unaffected streams keep running.
 
@@ -293,7 +293,7 @@ All build and test flows go through the **Makefile** (per project conventions);
   `packaging/make-extension-lvm` (adapted from argus). The package contains: the
   `watcher` binary, the engine binary, models per SoC, mosquitto, the required
   GStreamer/RKNN/RGA libraries, `bsext_init`, `config.json`, and the
-  default `watcher.json`.
+  default `config.json`.
 - **`bsext_init`** is reduced to: set up the shared library environment, then
   `start`/`stop`/`restart` the single `watcher` process (which owns mosquitto and
   all engines). It no longer launches an engine directly and no longer kills by

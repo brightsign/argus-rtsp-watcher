@@ -5,7 +5,10 @@
       "rtsp_url": "rtsp://192.0.2.10:8554/entrance",
       "target_fps": 10,
       "confidence": 0.4,
-      "zone": [0.10, 0.30, 0.90, 1.00]
+      "zone": [0.10, 0.30, 0.90, 1.00],
+      "zone_mode": "base",
+      "zone_color": "#ff8800",
+      "zone_thickness": 4
     },
     {
       "id": "lobby",

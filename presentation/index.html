@@ -22,6 +22,7 @@
       height: 100vh;
     }
     .tile {
+      position: relative;
       background: #000;
       overflow: hidden;
     }
@@ -32,6 +33,17 @@
       height: 100%;
       object-fit: contain;
       display: block;
+    }
+    /* A tile flashes a bright red inner border while its stream has a detected
+       person. box-shadow inset overlays the tile edges without resizing the
+       video; the animation blinks it on/off. */
+    .tile.alert {
+      animation: argus-flash 0.6s steps(1, end) infinite;
+    }
+    @keyframes argus-flash {
+      0%   { box-shadow: inset 0 0 0 10px #ff0000; }
+      50%  { box-shadow: inset 0 0 0 10px rgba(255, 0, 0, 0); }
+      100% { box-shadow: inset 0 0 0 10px #ff0000; }
     }
   </style>
 </head>
@@ -55,6 +67,20 @@
     var HOST = "127.0.0.1";
     var PORTS = [20200, 20201, 20202, 20203];
     var RETRY_MS = 3000;
+
+    // STREAM_IDS maps each tile (same order as PORTS) to the stream's id, which
+    // is the MQTT topic segment (bs/argus/<id>/analytics). It MUST match the
+    // order of streams[] in config.json (which also assigns the preview ports).
+    // Edit PORTS and STREAM_IDS together when the stream set changes.
+    var STREAM_IDS = ["pixley", "front-porch", "back-door", "reo1"];
+    var WS_URL = "ws://" + HOST + ":9001";   // mosquitto MQTT-over-WebSockets listener
+    var EVENT_HOLD_MS = 1500;                 // keep a tile flashing this long after the last in-zone event
+
+    var tiles = document.querySelectorAll("#wall .tile");
+    var imgs = document.querySelectorAll("#wall img");
+    var alertTimers = [];
+
+    // ---- MJPEG feeds ----
 
     function streamUrl(port) {
       // Cache-buster forces a fresh connection on each (re)connect so a
@@ -83,10 +109,119 @@
       img.src = streamUrl(port);
     }
 
-    var imgs = document.querySelectorAll("#wall img");
     for (var i = 0; i < PORTS.length; i++) {
       mount(imgs[i], PORTS[i]);
     }
+
+    // ---- In-zone detection (flash red border) ----
+    // The engine publishes a bs/argus/<id>/zone_event the instant two in-zone
+    // detections land within a 1s window (keyed off the stream's any/base mode),
+    // so the flash fires fast and only for people inside the configured zone.
+
+    function setAlert(idx, on) {
+      if (idx < 0 || idx >= tiles.length) return;
+      tiles[idx].classList.toggle("alert", !!on);
+    }
+
+    function onZoneEvent(streamId) {
+      var idx = STREAM_IDS.indexOf(streamId);
+      if (idx < 0) return;
+      setAlert(idx, true);
+      if (alertTimers[idx]) clearTimeout(alertTimers[idx]);
+      alertTimers[idx] = setTimeout(function () { setAlert(idx, false); }, EVENT_HOLD_MS);
+    }
+
+    // Minimal MQTT 3.1.1 over WebSockets, subscribe-only, QoS 0 -- no external
+    // library (the player is offline). The watcher's mosquitto serves MQTT over
+    // WS on :9001; each stream publishes bs/argus/<id>/analytics once per second and
+    // a bs/argus/<id>/zone_event the moment an in-zone detection is confirmed.
+    function mqttConnect() {
+      var ws;
+      try { ws = new WebSocket(WS_URL, "mqtt"); }
+      catch (e) { setTimeout(mqttConnect, RETRY_MS); return; }
+      ws.binaryType = "arraybuffer";
+      var buf = new Uint8Array(0);
+      var pingTimer = null;
+
+      function send(bytes) { if (ws.readyState === 1) ws.send(new Uint8Array(bytes)); }
+      function encLen(n) {
+        var o = [];
+        do { var b = n & 0x7f; n = n >> 7; if (n > 0) b |= 0x80; o.push(b); } while (n > 0);
+        return o;
+      }
+      function encStr(s) {
+        var o = [(s.length >> 8) & 0xff, s.length & 0xff];
+        for (var k = 0; k < s.length; k++) o.push(s.charCodeAt(k) & 0xff);
+        return o;
+      }
+      function sendConnect() {
+        // protocol "MQTT", level 4, clean session, keepalive 60s, random client id
+        var p = encStr("MQTT").concat([0x04, 0x02, 0x00, 0x3c],
+          encStr("argus-wall-" + Math.floor(Math.random() * 1e6)));
+        send([0x10].concat(encLen(p.length), p));
+      }
+      function sendSubscribe(topic) {
+        var body = [0x00, 0x01].concat(encStr(topic), [0x00]); // packet id 1, QoS 0
+        send([0x82].concat(encLen(body.length), body));
+      }
+
+      function handlePublish(b, qos) {
+        var tlen = (b[0] << 8) | b[1];
+        var topic = "";
+        for (var k = 0; k < tlen; k++) topic += String.fromCharCode(b[2 + k]);
+        var parts = topic.split("/");            // bs/argus/<id>/{analytics|zone_event}
+        var id = parts.length >= 3 ? parts[2] : "";
+        var kind = parts.length >= 4 ? parts[3] : "";
+        // Only the low-latency in-zone event drives the flash; analytics messages
+        // are ignored here (flashing is in-zone only, not any detected person).
+        if (kind === "zone_event") { onZoneEvent(id); }
+      }
+
+      function parse() {
+        var i = 0;
+        while (i < buf.length) {
+          if (buf.length - i < 2) break;
+          var first = buf[i];
+          var type = first >> 4;
+          var qos = (first >> 1) & 0x03;
+          var mult = 1, rl = 0, p = i + 1, b;
+          do {
+            if (p >= buf.length) { buf = buf.subarray(i); return; } // incomplete length
+            b = buf[p++]; rl += (b & 0x7f) * mult; mult *= 128;
+          } while (b & 0x80);
+          if (buf.length < p + rl) break;         // incomplete packet
+          var bodyBytes = buf.subarray(p, p + rl);
+          if (type === 2) {                        // CONNACK
+            if (bodyBytes.length >= 2 && bodyBytes[1] === 0) sendSubscribe("bs/argus/#");
+          } else if (type === 3) {                 // PUBLISH
+            handlePublish(bodyBytes, qos);
+          }
+          i = p + rl;
+        }
+        buf = buf.subarray(i);
+      }
+
+      ws.addEventListener("open", function () {
+        sendConnect();
+        pingTimer = setInterval(function () { send([0xc0, 0x00]); }, 30000); // PINGREQ
+      });
+      ws.addEventListener("message", function (ev) {
+        var chunk = new Uint8Array(ev.data);
+        var merged = new Uint8Array(buf.length + chunk.length);
+        merged.set(buf, 0);
+        merged.set(chunk, buf.length);
+        buf = merged;
+        parse();
+      });
+      function reconnect() {
+        if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+        for (var k = 0; k < tiles.length; k++) setAlert(k, false); // nothing stuck red
+        setTimeout(mqttConnect, RETRY_MS);
+      }
+      ws.addEventListener("close", reconnect);
+      ws.addEventListener("error", function () { try { ws.close(); } catch (e) {} });
+    }
+    mqttConnect();
   </script>
 </body>
 </html>

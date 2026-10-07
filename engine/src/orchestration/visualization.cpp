@@ -585,7 +585,8 @@ void process_inference_results(
     IModelRunner* second_runner,
     FusionResults* fusion_output,
     const output::BlurConfig& blur_config,
-    bool flip_h) noexcept
+    bool flip_h,
+    const zone::ZoneCfg& zone) noexcept
 {
     if (!runner) return;
 
@@ -641,6 +642,23 @@ void process_inference_results(
                     scale_x, scale_y, offset_x, offset_y);
             debug_vis_count++;
         }
+    }
+
+    // Draw the configured detection zone as a thin, faint outline in its configured
+    // color. The zone is normalized 0..1 of the camera frame, mapped to canvas coords
+    // with the same letterbox transform the boxes use. Drawn first so detection boxes
+    // sit on top. "Faint" = a 1px line blended at low alpha (OpenCV lines are opaque).
+    if (zone.enabled && orig_width > 0 && orig_height > 0) {
+        int zx0 = static_cast<int>(zone.x0 * orig_width * scale_x) + offset_x;
+        int zy0 = static_cast<int>(zone.y0 * orig_height * scale_y) + offset_y;
+        int zx1 = static_cast<int>(zone.x1 * orig_width * scale_x) + offset_x;
+        int zy1 = static_cast<int>(zone.y1 * orig_height * scale_y) + offset_y;
+        if (flip_h) { int t = drawMat.cols - zx0; zx0 = drawMat.cols - zx1; zx1 = t; }
+        cv::Mat overlay = drawMat.clone();
+        const int line_thickness = zone.thickness > 0 ? zone.thickness : 1;
+        cv::rectangle(overlay, cv::Point(zx0, zy0), cv::Point(zx1, zy1),
+                      cv::Scalar(zone.b, zone.g, zone.r), line_thickness, cv::LINE_AA);
+        cv::addWeighted(overlay, 0.35, drawMat, 0.65, 0.0, drawMat);
     }
 
     // Apply privacy blur before drawing overlays so annotations remain visible

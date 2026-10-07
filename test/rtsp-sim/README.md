@@ -2,7 +2,7 @@
 
 Serve looped local video files as RTSP streams, so you can test the watcher
 without live cameras. The watcher can't tell these from real RTSP feeds — point
-`watcher.json` at them and everything (detection, zones, `in_zone`, preview)
+`config.json` at them and everything (detection, zones, `in_zone`, preview)
 works the same.
 
 It's a [MediaMTX](https://github.com/bluenviron/mediamtx) server whose paths loop
@@ -18,7 +18,7 @@ your videos into RTSP via ffmpeg (bundled in the `:latest-ffmpeg` image).
    podman compose up          # or: docker compose up
    ```
 
-3. Point `watcher.json` at this host — the paths are `lobby`, `entrance`,
+3. Point `config.json` at this host — the paths are `lobby`, `entrance`,
    `aisle`:
 
    ```json
@@ -26,8 +26,8 @@ your videos into RTSP via ffmpeg (bundled in the `:latest-ffmpeg` image).
    ```
 
    A ready sample with all three streams and zones is in
-   [`watcher.json`](watcher.json) in this folder — copy it to the player's
-   `/storage/sd/watcher.json`. It points at `rtsp://rtsp-host:8554/<name>` (the
+   [`config.json`](config.json) in this folder — copy it to the player's
+   `/storage/sd/config.json`. It points at `rtsp://rtsp-host:8554/<name>` (the
    machine running the sim); change `rtsp-host` to your sim host's name or IP if
    different, and make sure the player can resolve/reach it. Point it at the sim
    host, **not** the host serving your live cameras.

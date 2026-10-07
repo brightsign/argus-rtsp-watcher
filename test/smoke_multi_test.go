@@ -99,8 +99,9 @@ func TestMultiStreamIsolationAndReconcile(t *testing.T) {
 	// shipped examples/watcher.example.json or the shared staging/<SOC> tree
 	// -- those stay untouched for any other test or a real packaging run.
 	extDir := setupWatcherExtDir(t, stagingDir, watcherBin)
-	watcherJSONPath := filepath.Join(extDir, "watcher.json")
-	writeMultiWatcherJSON(t, watcherJSONPath, []multiStreamDef{
+	configJSONPath := filepath.Join(extDir, "config.json")
+	baseConfigPath := filepath.Join(stagingDir, "config.json")
+	writeMultiConfigJSON(t, configJSONPath, baseConfigPath, []multiStreamDef{
 		{id: "cam1", filePath: testVideo, targetFPS: 10},
 		{id: "cam2", filePath: testVideo, targetFPS: 10},
 		{id: "cam3", filePath: testVideo, targetFPS: 10},
@@ -183,7 +184,7 @@ func TestMultiStreamIsolationAndReconcile(t *testing.T) {
 
 	// --- Live reconcile: drop cam3, add cam4; cam1/cam2 must never stop. ---
 	rewriteTime := time.Now()
-	writeMultiWatcherJSON(t, watcherJSONPath, []multiStreamDef{
+	writeMultiConfigJSON(t, configJSONPath, baseConfigPath, []multiStreamDef{
 		{id: "cam1", filePath: testVideo, targetFPS: 10},
 		{id: "cam2", filePath: testVideo, targetFPS: 10},
 		{id: "cam4", filePath: testVideo, targetFPS: 10},
@@ -213,26 +214,31 @@ func TestMultiStreamIsolationAndReconcile(t *testing.T) {
 }
 
 // multiStreamDef is the subset of config.Stream this test needs to build a
-// watcher.json for the live watcher process to discover and (re)load.
+// config.json for the live watcher process to discover and (re)load.
 type multiStreamDef struct {
 	id        string
 	filePath  string
 	targetFPS int
 }
 
-// writeMultiWatcherJSON writes (or rewrites, for the live-reconcile step) a
-// watcher.json at path. Rewriting the same path updates its mtime, which is
-// exactly what configwatch.Watch polls for inside the running watcher
-// process to trigger a live reconcile (docs/DESIGN.md §7.4).
-func writeMultiWatcherJSON(t *testing.T, path string, streams []multiStreamDef) {
+// writeMultiConfigJSON writes (or rewrites, for the live-reconcile step) the
+// combined config.json at path: the test's streams plus the engine block copied
+// from the packaged default at baseConfigPath. Rewriting the same path updates
+// its mtime, which is exactly what configwatch.Watch polls for inside the
+// running watcher process to trigger a live reconcile (docs/DESIGN.md §7.4).
+func writeMultiConfigJSON(t *testing.T, path, baseConfigPath string, streams []multiStreamDef) {
 	t.Helper()
-	w := config.Watcher{Streams: make([]config.Stream, len(streams))}
+	base, err := config.Load(baseConfigPath)
+	if err != nil {
+		t.Fatalf("load base config %s: %v", baseConfigPath, err)
+	}
+	w := config.Watcher{Streams: make([]config.Stream, len(streams)), Engine: base.Engine}
 	for i, s := range streams {
 		w.Streams[i] = config.Stream{ID: s.id, FilePath: s.filePath, TargetFPS: s.targetFPS}
 	}
 	data, err := json.MarshalIndent(w, "", "  ")
 	if err != nil {
-		t.Fatalf("marshal watcher.json: %v", err)
+		t.Fatalf("marshal config.json: %v", err)
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
@@ -260,7 +266,10 @@ func setupWatcherExtDir(t *testing.T, stagingDir, watcherBin string) string {
 		t.Fatalf("write watcher copy: %v", err)
 	}
 
-	for _, name := range []string{"argus-engine", "config.json", "bin", "lib", "model"} {
+	// config.json is NOT symlinked: the test writes its own combined config.json
+	// (streams + engine block) at extDir/config.json so the watcher discovers the
+	// test's streams, not the packaged default's.
+	for _, name := range []string{"argus-engine", "bin", "lib", "model"} {
 		src := filepath.Join(stagingDir, name)
 		if _, err := os.Stat(src); err != nil {
 			t.Fatalf("staged asset missing: %s: %v", src, err)

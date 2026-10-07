@@ -142,6 +142,18 @@ bool load_from_file(const std::string& path, AppConfig& out, bool /*strict*/, ch
         out.zone.x1 = z["x1"].get<float>();
         out.zone.y1 = z["y1"].get<float>();
         out.zone.enabled = true;
+        // Optional membership mode; only "base" switches off the default "any".
+        if (z.contains("mode") && z["mode"].is_string()) {
+          out.zone.mode = z["mode"].get<std::string>();
+        }
+        // Optional "#RRGGBB" outline color; defaults to green when absent.
+        if (z.contains("color") && z["color"].is_string()) {
+          out.zone.color = z["color"].get<std::string>();
+        }
+        // Optional outline width in pixels; defaults to 1 (thin) when absent.
+        if (z.contains("thickness") && z["thickness"].is_number_integer()) {
+          out.zone.thickness = z["thickness"].get<int>();
+        }
       }
     }
 

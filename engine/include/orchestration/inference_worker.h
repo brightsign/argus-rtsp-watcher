@@ -10,6 +10,7 @@
 // Full includes instead of forward declarations
 #include "models/model_runner.h"
 #include "pipeline/shared_frame.h"
+#include "orchestration/zone.h"
 #include "pipeline/frame_mailbox.h"
 #include "pipeline/pipeline_types.h"
 #include "tracking/tracker.h"
@@ -39,6 +40,7 @@ struct WorkerConfig {
     output::BlurConfig blur_config;  // Person blur configuration (applied before drawing boxes)
     bool flip_horizontal{false};     // Flip output frame left-right (mirror correction)
     bool enable_frame_stamp{true};   // Burn human+machine-readable frame_seq/frame_ts stamp into output frames
+    zone::ZoneCfg zone{};            // Custom detection zone; drawn as a faint green outline when enabled
 };
 
 // Run inference loop for a single model

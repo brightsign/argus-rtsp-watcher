@@ -396,7 +396,7 @@ void run_inference_loop(
             visualization::process_inference_results(runner, vis_canvas, debug_frame_idx,
                                                      sf->orig_width, sf->orig_height, second_runner,
                                                      fusion_output, config.blur_config,
-                                                     config.flip_horizontal);
+                                                     config.flip_horizontal, config.zone);
 
             // (flip already applied above — no post-visualization flip needed)
 

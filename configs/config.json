@@ -1,53 +1,59 @@
 {
-  "input_source": "rtsp",
-  "device_id": "",
-  "input": {
-    "rtsp_url": "",
-    "file_path": "",
-    "rtsp": { "latency_ms": 100 },
-    "file": { "loop": true }
-  },
-  "input_source_priority": "config",
-  "primary_model": {
-    "name": "retinaface",
-    "model_path": "model/RetinaFace.rknn",
-    "input_size": [320, 320],
-    "npu_core": -1,
-    "norm": { "mean": [123.675, 116.28, 103.53], "std": [58.395, 57.12, 57.375] },
-    "conf_threshold": 0.25,
-    "nms_threshold": 0.45
-  },
-  "secondary_models": [
-    {
-      "name": "yolox",
-      "model_path": "model/yolox_s.rknn",
-      "input_size": [640, 640],
+  "streams": [
+    { "id": "cam1", "rtsp_url": "rtsp://192.0.2.101:554/stream1", "target_fps": 10 }
+  ],
+  "mediamtx": { "enabled": false },
+  "engine": {
+    "input_source": "rtsp",
+    "device_id": "",
+    "input": {
+      "rtsp_url": "",
+      "file_path": "",
+      "rtsp": { "latency_ms": 100 },
+      "file": { "loop": true }
+    },
+    "input_source_priority": "config",
+    "primary_model": {
+      "name": "retinaface",
+      "model_path": "model/RetinaFace.rknn",
+      "input_size": [320, 320],
       "npu_core": -1,
-      "norm": { "mean": [0, 0, 0], "std": [1, 1, 1] },
-      "conf_threshold": 0.1,
+      "norm": { "mean": [123.675, 116.28, 103.53], "std": [58.395, 57.12, 57.375] },
+      "conf_threshold": 0.25,
       "nms_threshold": 0.45
-    }
-  ],
-  "processing": { "th": { "score": 0.5, "iou": 0.45 }, "nms_max_dets": 100 },
-  "runtime": { "target_fps": 10, "heartbeat_ms": 1000 },
-  "publishers": [
-    {
-      "kind": "mqtt",
-      "mqtt": {
-        "host": "localhost",
-        "port": 1883,
-        "topic": "bs/argus/analytics",
-        "qos": 0,
-        "retain": false,
-        "period_ms": 1000
+    },
+    "secondary_models": [
+      {
+        "name": "yolox",
+        "model_path": "model/yolox_s.rknn",
+        "input_size": [640, 640],
+        "npu_core": -1,
+        "norm": { "mean": [0, 0, 0], "std": [1, 1, 1] },
+        "conf_threshold": 0.1,
+        "nms_threshold": 0.45
       }
-    }
-  ],
-  "log_level": "info",
-  "log_dir": "/tmp",
-  "log_json": true,
-  "enable_frame_output": false,
-  "enable_frame_stamp": true,
-  "test_face_only": false,
-  "test_yolo_only": false
+    ],
+    "processing": { "th": { "score": 0.5, "iou": 0.45 }, "nms_max_dets": 100 },
+    "runtime": { "target_fps": 10, "heartbeat_ms": 1000 },
+    "publishers": [
+      {
+        "kind": "mqtt",
+        "mqtt": {
+          "host": "localhost",
+          "port": 1883,
+          "topic": "bs/argus/analytics",
+          "qos": 0,
+          "retain": false,
+          "period_ms": 1000
+        }
+      }
+    ],
+    "log_level": "info",
+    "log_dir": "/tmp",
+    "log_json": true,
+    "enable_frame_output": false,
+    "enable_frame_stamp": true,
+    "test_face_only": false,
+    "test_yolo_only": false
+  }
 }

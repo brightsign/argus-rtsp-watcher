@@ -121,6 +121,18 @@ bool MqttPublisher::start() noexcept {
     return false;
   }
 
+  // Derive the low-latency in-zone event topic as a sibling of the analytics
+  // topic: bs/argus/<id>/analytics -> bs/argus/<id>/zone_event.
+  {
+    const std::string suffix = "/analytics";
+    if (cfg_.topic.size() >= suffix.size() &&
+        cfg_.topic.compare(cfg_.topic.size() - suffix.size(), suffix.size(), suffix) == 0) {
+      zone_event_topic_ = cfg_.topic.substr(0, cfg_.topic.size() - suffix.size()) + "/zone_event";
+    } else {
+      zone_event_topic_ = cfg_.topic + "/zone_event";
+    }
+  }
+
   run_.store(true, std::memory_order_release);
   tick_ = std::thread([this]{
     const int period = std::max(100, cfg_.period_ms);
@@ -148,26 +160,79 @@ void MqttPublisher::stop() noexcept {
 }
 
 bool MqttPublisher::publish_result(const PipelineResult& r) noexcept {
-  std::lock_guard<std::mutex> lk(m_);
-  // Collect people_count (YOLOX) and gaze_count (RetinaFace)
-  people_       = r.people_count;
-  gaze_         = r.gaze_count;
-  last_ts_ns_   = r.ts_ns;
-  frame_seq_    = r.seq;             // Video<->MQTT sync key
-  capture_wall_ns_ = r.capture_wall_ns;
-  // Use FPS from PipelineResult instead of calculating from frames_accum_
-  frames_accum_ = r.fps;  // Store actual FPS in frames_accum_ for use in payload
-  frame_width_  = r.frame_width;   // V6.2: Store for normalized speed
-  frame_height_ = r.frame_height;  // V6.2: Store for normalized speed
-  
-  // V7.0: Update health metrics from pipeline data (immediate, not waiting for telemetry)
-  detector_fps_ = float(r.fps);  // Detector FPS ~= pipeline FPS
-  tracker_fps_ = float(r.fps);   // Tracker FPS ~= pipeline FPS
-  npu_load_ = read_npu_load_percent();  // Read NPU load from kernel debug interface
-  
-  // Store person tracks
-  tracks_ = r.person_tracks;
+  bool fire = false;
+  int in_zone_count = 0;
+  int64_t now_ms = 0;
+  {
+    std::lock_guard<std::mutex> lk(m_);
+    // Collect people_count (YOLOX) and gaze_count (RetinaFace)
+    people_       = r.people_count;
+    gaze_         = r.gaze_count;
+    last_ts_ns_   = r.ts_ns;
+    frame_seq_    = r.seq;             // Video<->MQTT sync key
+    capture_wall_ns_ = r.capture_wall_ns;
+    // Use FPS from PipelineResult instead of calculating from frames_accum_
+    frames_accum_ = r.fps;  // Store actual FPS in frames_accum_ for use in payload
+    frame_width_  = r.frame_width;   // V6.2: Store for normalized speed
+    frame_height_ = r.frame_height;  // V6.2: Store for normalized speed
+
+    // V7.0: Update health metrics from pipeline data (immediate, not waiting for telemetry)
+    detector_fps_ = float(r.fps);  // Detector FPS ~= pipeline FPS
+    tracker_fps_ = float(r.fps);   // Tracker FPS ~= pipeline FPS
+    npu_load_ = read_npu_load_percent();  // Read NPU load from kernel debug interface
+
+    // Store person tracks
+    tracks_ = r.person_tracks;
+
+    // Per-frame in-zone event detection (uses the same mode predicate as the
+    // published in_zone field). Decided under the lock; published after release.
+    now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                 clk::now().time_since_epoch()).count();
+    fire = detect_zone_event_locked(now_ms, in_zone_count);
+  }
+  if (fire) {
+    publish_zone_event(in_zone_count, now_ms);
+  }
   return true;
+}
+
+// detect_zone_event_locked records this frame in the rolling window if any track
+// is in the zone (under the configured mode), prunes the window to the last
+// ZONE_EVENT_WINDOW_MS, and returns true -- rate-limited to ZONE_EVENT_REPEAT_MS
+// -- once at least ZONE_EVENT_MIN_HITS frames fall inside the window.
+bool MqttPublisher::detect_zone_event_locked(int64_t now_ms, int& in_zone_count) noexcept {
+  in_zone_count = 0;
+  if (!cfg_.zone.enabled) {
+    zone_window_.reset();
+    return false;
+  }
+  for (const auto& t : tracks_) {
+    if (zone::box_in_zone(cfg_.zone.mode, t.x0, t.y0, t.x1, t.y1,
+                          frame_width_, frame_height_,
+                          cfg_.zone.x0, cfg_.zone.y0, cfg_.zone.x1, cfg_.zone.y1)) {
+      ++in_zone_count;
+    }
+  }
+  return zone_window_.record(in_zone_count > 0, now_ms);
+}
+
+// publish_zone_event emits a small message on the sibling zone_event topic,
+// out of band from the 1 Hz analytics tick, so a flash fires immediately.
+void MqttPublisher::publish_zone_event(int in_zone_count, int64_t now_ms) noexcept {
+  if (!mq_ || zone_event_topic_.empty()) return;
+  char buf[192];
+  const int n = std::snprintf(buf, sizeof(buf),
+      "{\"device_id\":\"%s\",\"event\":\"in_zone\",\"in_zone\":%d,"
+      "\"mode\":\"%s\",\"ts_ms\":%lld}",
+      cfg_.device_id.c_str(), in_zone_count,
+      cfg_.zone.mode == zone::Mode::Base ? "base" : "any",
+      static_cast<long long>(now_ms));
+  if (n <= 0) return;
+  const int rc = mosquitto_publish(mq_, nullptr, zone_event_topic_.c_str(),
+                                   n, buf, cfg_.qos, /*retain=*/false);
+  if (rc != MOSQ_ERR_SUCCESS) {
+    LG_WARN("mqtt: zone_event publish failed rc=%d", rc);
+  }
 }
 
 bool MqttPublisher::publish_telemetry(const TelemetrySnapshot& t) noexcept {
@@ -268,13 +333,14 @@ std::string MqttPublisher::make_payload_locked() const {
                           cy < border_px_y || cy > frame_height_ - border_px_y);
     const char* zones_str = is_edge ? "[\"edge\"]" : "[\"roi\"]";
 
-    // Custom-zone membership: feet (bottom-center) inside the normalized zone.
+    // Custom-zone membership: the box tested against the normalized zone under
+    // the configured mode (Base = feet/bottom-center inside; Any = any overlap).
     // Emitted as an additive field only when a zone is configured.
     char in_zone_field[24];
     in_zone_field[0] = '\0';
     if (cfg_.zone.enabled) {
-      const bool is_in_zone = zone::feet_in_zone(
-          t.x0, t.x1, t.y1, frame_width_, frame_height_,
+      const bool is_in_zone = zone::box_in_zone(
+          cfg_.zone.mode, t.x0, t.y0, t.x1, t.y1, frame_width_, frame_height_,
           cfg_.zone.x0, cfg_.zone.y0, cfg_.zone.x1, cfg_.zone.y1);
       std::snprintf(in_zone_field, sizeof(in_zone_field),
                     "\"in_zone\":%s,", is_in_zone ? "true" : "false");

@@ -14,7 +14,7 @@
 #   ./zone-picker.sh --player xt5i --port 20201            # entrance, live
 #   ./zone-picker.sh --player xt5i --port 20202 --once     # aisle, single snapshot
 #
-# --port is the stream's preview port (20200 + its 0-based index in watcher.json).
+# --port is the stream's preview port (20200 + its 0-based index in config.json).
 # --once loads a single snapshot instead of refreshing live.
 # Press Ctrl-C to stop the local server.
 
@@ -79,7 +79,7 @@ PICK_URL="http://localhost:${SERVE_PORT}/zone-picker.html?url=${ENC_IMG}&live=${
 
 echo "picker : $PICK_URL"
 echo "camera : $IMG_URL   (live refresh: $([ "$LIVE" = 1 ] && echo on || echo off))"
-echo "draw a rectangle, then copy the \"zone\": [...] line into watcher.json"
+echo "draw a rectangle, then copy the \"zone\": [...] line into config.json"
 echo "Press Ctrl-C to stop."
 
 if command -v xdg-open >/dev/null 2>&1; then

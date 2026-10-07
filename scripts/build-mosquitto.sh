@@ -63,14 +63,14 @@ build_broker() {
             -DCMAKE_TOOLCHAIN_FILE="${OE_CMAKE_TOOLCHAIN_FILE}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DWITH_TLS=ON -DWITH_PERSISTENCE=ON -DWITH_DOCS=OFF \
-            -DWITH_TESTING=OFF -DWITH_WEBSOCKETS=OFF -DWITH_STRIP=ON
+            -DWITH_TESTING=OFF -DWITH_WEBSOCKETS=ON -DWITH_STRIP=ON
     else
         cmake -S "${BUILD_DIR}" -B "${BUILD_DIR}/build" \
             -DCMAKE_C_COMPILER="${CC%% *}" \
             -DCMAKE_SYSROOT="${SYSROOT}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DWITH_TLS=ON -DWITH_PERSISTENCE=ON -DWITH_DOCS=OFF \
-            -DWITH_TESTING=OFF -DWITH_WEBSOCKETS=OFF -DWITH_STRIP=ON
+            -DWITH_TESTING=OFF -DWITH_WEBSOCKETS=ON -DWITH_STRIP=ON
     fi
     cmake --build "${BUILD_DIR}/build" -j"$(nproc)"
 

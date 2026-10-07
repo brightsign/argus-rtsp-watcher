@@ -51,6 +51,10 @@ copy_glob "${SYSLIB}" "libtbb*.so*"
 copy_glob "${SYSLIB}" "librga.so*"
 copy_glob "${SYSLIB}" "libturbojpeg.so*"
 copy_glob "${SYSLIB}" "libmosquitto.so*"
+# mosquitto is built WITH_WEBSOCKETS=ON (for the browser MQTT-over-WS bus), so the
+# broker needs libwebsockets at runtime; the dependency-closure walk below then
+# pulls libwebsockets' own deps (libssl/libcrypto/libz, already bundled anyway).
+copy_glob "${SYSLIB}" "libwebsockets.so*"
 
 if [ -f "${RKNN_RT_LIB}" ]; then
     cp -L "${RKNN_RT_LIB}" "${OUTPUT_DIR}/"

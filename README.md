@@ -21,7 +21,7 @@ The base Argus extension analyzes **one** camera per player. Many installs have 
 - **Per-stream MQTT** — `bs/argus/<stream-id>/analytics`, ~1 msg/s. See **[docs/bounding-boxes.md](docs/bounding-boxes.md)** for the box data.
 - **Zones of interest** — draw a per-camera rectangle and each person reports `in_zone` (their feet inside it). Set it with `tools/zone-picker.sh`; see [Zones](#zones-regions-of-interest).
 - **Browser preview** — optional annotated MJPEG per stream (boxes over the video).
-- **Live reconfiguration** — edit `watcher.json` and streams are added/removed/retuned without restarting the others.
+- **Live reconfiguration** — edit `config.json` and streams are added/removed/retuned without restarting the others.
 - **Fault isolation** — each stream is its own process group; one camera failing never touches the others; automatic restart with backoff.
 - **Health endpoint** — `GET :9200/healthz` reports per-stream state and capacity.
 
@@ -58,7 +58,7 @@ flowchart LR
     P1 --> BROWSER["browser"]
 ```
 
-The **watcher** is a small Go supervisor. It discovers `watcher.json`, renders one engine config per stream, starts one mosquitto broker plus one engine and one MJPEG preview server per stream, and supervises them all. The **engine** is a lean copy of the Argus person+gaze pipeline (YOLOX person detection + RetinaFace face/gaze + ByteTrack), one process per stream. See **[docs/DESIGN.md](docs/DESIGN.md)**.
+The **watcher** is a small Go supervisor. It discovers `config.json`, renders one engine config per stream, starts one mosquitto broker plus one engine and one MJPEG preview server per stream, and supervises them all. The **engine** is a lean copy of the Argus person+gaze pipeline (YOLOX person detection + RetinaFace face/gaze + ByteTrack), one process per stream. See **[docs/DESIGN.md](docs/DESIGN.md)**.
 
 ## Supported hardware
 
@@ -78,7 +78,7 @@ Configuring more streams than a tier's capacity is a startup warning, not a fail
 
 ## Quick start
 
-1. **Write `watcher.json`** listing your streams:
+1. **Write `config.json`** listing your streams:
 
    ```json
    {
@@ -90,7 +90,7 @@ Configuring more streams than a tier's capacity is a startup warning, not a fail
    }
    ```
 
-2. **Put it on the player's SD card** at `/storage/sd/watcher.json`. It wins the config-discovery order, so no rebuild needed to change cameras.
+2. **Put it on the player's SD card** at `/storage/sd/configs/config.json`. It wins the config-discovery order, so no rebuild needed to change cameras.
 
 3. **Install the extension** (see [Deploying to a player](#deploying-to-a-player)) and reboot.
 
@@ -106,12 +106,15 @@ Configuring more streams than a tier's capacity is a startup warning, not a fail
 
 ## Configuration
 
-### `watcher.json`
+### `config.json`
 
-The operator-facing file. Only these fields (strict parsing — no comments, no extra keys):
+The single operator-facing file, with three top-level sections — `streams` (required), `mediamtx` (optional), and `engine` (optional). Strict parsing: no comments, no unknown keys.
 
 | Field | Required | Notes |
 |-------|----------|-------|
+| `streams` | yes | The list of cameras to run, one engine each (fields below). |
+| `mediamtx` | no | `{ "enabled": bool, "config": "<path>" }` — run the bundled on-player RTSPS proxy. Default off. See [Running the proxy on the player](#running-the-proxy-on-the-player-optional). |
+| `engine` | no | The per-stream engine template (models, thresholds, MQTT, logging). Omit to inherit the packaged default; include to override it. Rendered per stream, with `confidence`/`zone`/`target_fps`/`rtsp_url` applied on top. |
 | `streams[].id` | yes | Unique, `^[A-Za-z0-9_-]+$`. Becomes the MQTT topic and preview port index. |
 | `streams[].rtsp_url` | source* | The camera/proxy RTSP URL. |
 | `streams[].file_path` | source* | A local video file to analyze instead of a live feed (test/offline). |
@@ -158,16 +161,26 @@ Every stream has exactly one input. Pick the one that matches where the video co
 
 ### Discovery order
 
-The watcher looks for `watcher.json` in this order, first found wins (no CLI/env override):
+The watcher looks for `config.json` in this order, first found wins (no CLI/env override):
 
-1. `/storage/sd/watcher.json`
-2. `/storage/sd/configs/watcher.json`
-3. `/storage/ssd/watcher.json`
-4. `/storage/ssd/configs/watcher.json`
+1. `/storage/sd/configs/config.json`  ← standard location
+2. `/storage/sd/config.json`
+3. `/storage/ssd/configs/config.json`
+4. `/storage/ssd/config.json`
 5. the packaged default inside the extension
 
-See **[examples/](examples/)** for ready-to-copy `watcher.json` files (basic,
+See **[examples/](examples/)** for ready-to-copy `config.json` files (basic,
 USB, and a multi-stream feature showcase).
+
+### Zone dashboard (on the player)
+
+The extension runs an on-player **zone dashboard** at `http://<player>:20300`
+(the bundled `config-server`, supervised by the watcher). It lists your streams,
+shows each camera's live snapshot, and lets you **draw a detection zone** on it
+and **Save** — the write lands in the live `config.json`, which hot-reloads within
+a few seconds (no reboot). The zone then shows as a faint green outline on that
+camera's annotated feed. (`tools/zone-picker.html` remains as an offline host-side
+picker that exports zone coordinates to paste by hand.)
 
 ## RTSP sources & MediaMTX
 
@@ -188,7 +201,7 @@ player cannot open them directly:
 
 The fix is a small **RTSP proxy** — [MediaMTX](https://github.com/bluenviron/mediamtx) —
 on an always-on LAN host (a mini PC, NUC, or Pi). It pulls from each camera and
-re-publishes a **plain `rtsp://`** stream the player can read. Your `watcher.json`
+re-publishes a **plain `rtsp://`** stream the player can read. Your `config.json`
 then points at the proxy, not the camera.
 
 ```
@@ -227,12 +240,44 @@ podman run -d --name mediamtx --network host \
   -v ./mediamtx.yml:/mediamtx.yml:ro bluenviron/mediamtx:latest
 ```
 
-Then set `"rtsp_url": "rtsp://<proxy-ip>:8554/entrance"` in `watcher.json`
-(see `examples/watcher-advanced.example.json`).
+Then set `"rtsp_url": "rtsp://<proxy-ip>:8554/entrance"` in `config.json`
+(see `examples/config-advanced.example.json`).
 
 > **Key points:** use port **7447** (plain RTSP), never 7441 (`rtsps`/SRTP); pull
 > over **TCP**; and keep `sourceOnDemand: no` so the stream stays warm and the
 > engine's first-frame wait doesn't time out.
+
+### Running the proxy on the player (optional)
+
+Instead of a separate LAN host, the extension can run MediaMTX **on the player
+itself**, supervised by the watcher (crash-restarted, cleanly stopped). It's
+**opt-in** — off by default. Enable it in `config.json`:
+
+```json
+{
+  "streams": [
+    { "id": "entrance", "rtsp_url": "rtsp://localhost:8554/entrance", "target_fps": 10 }
+  ],
+  "mediamtx": { "enabled": true }
+}
+```
+
+MediaMTX reads its config first-found from:
+
+```
+/storage/sd/configs/mediamtx.yml      # operator override (survives reinstall)
+/storage/sd/mediamtx.yml
+<extension dir>/mediamtx.yml           # packaged default (placeholders)
+```
+
+Put your `paths:` (the same `mediamtx.yml` shown above) in
+`/storage/sd/configs/mediamtx.yml`, point each `config.json` stream at
+`rtsp://localhost:8554/<path>`, and reboot or `bsext_init restart`. The
+port-7447-vs-7441 guidance above still applies. See
+[docs/mediamtx-secure-rtsp.md](docs/mediamtx-secure-rtsp.md) for the TLS details.
+
+> On-player proxying uses the player's CPU/RAM; for many streams a dedicated LAN
+> host is still the better choice. Measure before committing to it in production.
 
 ### Testing without cameras
 
@@ -275,7 +320,7 @@ example-client/bin/argus-example-client --broker <player-ip>:1883 \
 Each stream is served as annotated MJPEG (boxes drawn on the video) at:
 
 ```
-http://<player-ip>:<port>/      port = 20200 + the stream's 0-based index in watcher.json
+http://<player-ip>:<port>/      port = 20200 + the stream's 0-based index in config.json
 ```
 
 So the example config above gives `lobby` → `:20200`, `entrance` → `:20201`, `aisle` → `:20202`. The player must allow inbound on those ports. Annotated frames are written on-device to `/tmp/argus-frames/<id>/output.jpg`.
@@ -306,13 +351,13 @@ Mark a rectangle on a camera and Argus tells you when a person is standing in it
 
    Drag a rectangle over the area; copy the `"zone": [..]` line it prints. (No script? Open `tools/zone-picker.html` in a browser and load a frame or `http://<player>:<port>/image`.)
 
-2. Add it to that stream in `watcher.json`:
+2. Add it to that stream in `config.json`:
 
    ```json
    { "id": "entrance", "rtsp_url": "rtsp://.../entrance", "target_fps": 10, "zone": [0.40, 0.53, 0.90, 1.00] }
    ```
 
-3. Save it to `/storage/sd/watcher.json`. That one camera's engine restarts (a few seconds) and its tracks start reporting `in_zone`; the other cameras are untouched.
+3. Save it to `/storage/sd/configs/config.json`. That one camera's engine restarts (a few seconds) and its tracks start reporting `in_zone`; the other cameras are untouched.
 
 **Act only when someone is in a zone** — filter client-side (nothing is suppressed on the player):
 
@@ -327,7 +372,7 @@ Helpers in `tools/` (their own Go module + scripts). Build the binaries with `ma
 
 | Tool | What it does |
 |------|--------------|
-| `tools/zone-picker.sh` / `zone-picker.html` | Draw a zone on a live or recorded frame; outputs the normalized `zone` for `watcher.json` and pixel coords for `boxstats`. |
+| `tools/zone-picker.sh` / `zone-picker.html` | Draw a zone on a live or recorded frame; outputs the normalized `zone` for `config.json` and pixel coords for `boxstats`. |
 | `tools/record-frames.sh` | Record a stream's annotated frames **and** its MQTT box data together, in sync. |
 | `tools/bin/framebox` | Given a recorded frame, decode its `frame_seq` stamp and print the boxes recorded for that exact frame. |
 | `tools/bin/boxstats` | Report the range of person-box areas inside a region across a recording (helps pick a size/zone filter). |
@@ -365,13 +410,16 @@ The **RKNN headers and runtime** are not vendored: the Rockchip RKNN API headers
 
 The **cross-compile SDK**, the **RKNN toolkit clone**, and the **compiled models** live in a **shared build cache outside the repo** (default `../argus-build-cache`, parallel to this checkout; override with `ARGUS_CACHE_DIR`), so they are produced once and reused across sibling projects. Run `make cache-info` to see the resolved location and what is present.
 
-The SDK (BrightSign 9.1 series), the RKNN toolkit, and the `rknn_tk2` Docker image are **provisioned once per build box** by the separate [`brightsign-sdk-builder`](../brightsign-sdk-builder) repo, which downloads the BrightSign OS source, builds the custom SDK, and installs it into the shared cache this repo reads. Run it once from a parallel checkout:
+### One-time per build box
+
+The SDK (BrightSign 9.1 series), the RKNN toolkit, and the `rknn_tk2` Docker image are **provisioned once per build box** by the separate [`brightsign-sdk-builder`](https://github.com/brightsign/brightsign-sdk-builder) repo, which downloads the BrightSign OS source, builds the custom SDK, and installs it into a shared cache that sits **outside any single repo**. Clone and build it once:
 
 ```bash
-cd ../brightsign-sdk-builder && make build
+git clone https://github.com/brightsign/brightsign-sdk-builder.git
+cd brightsign-sdk-builder && make build
 ```
 
-After that, this repo's `make build` finds the SDK already installed (and the toolkit + image present) and proceeds straight to the app build; host-only `make run-tests` stays SDK-free. If you instead already have a `brightsign-x86_64-cobra-toolchain-*.sh` installer, `make fetch-sdk` will install it from the shared cache dir, the repo root, or `make build SDK_INSTALLER=/path/to/installer.sh`. Each target guards its inputs and fails with a clear message when something is missing.
+Do this **once per machine**. After that first (~multi-hour) run, this repo and our other example extensions all cross-compile against the same cached SDK/toolkit/models — no per-repo SDK rebuild. This repo's `make build` then finds the SDK already installed (and the toolkit + image present) and proceeds straight to the app build; host-only `make run-tests` stays SDK-free. If you instead already have a `brightsign-x86_64-cobra-toolchain-*.sh` installer, `make fetch-sdk` will install it from the shared cache dir, the repo root, or `make build SDK_INSTALLER=/path/to/installer.sh`. Each target guards its inputs and fails with a clear message when something is missing.
 
 To reset: `make clean` returns this checkout to a freshly-cloned state (removes `build/`, `staging/`, zips, and the fetched prep headers) while leaving the shared cache; `make cache-clean` removes the shared cache for all projects.
 
@@ -423,17 +471,17 @@ Extension lifecycle on the player (root shell): `/var/volatile/bsext/ext_npu_arg
 ```
 cmd/watcher/        Go supervisor entry point
 internal/
-  config/           watcher.json load + discovery + validation
+  config/           config.json load + discovery + validation
   configgen/        render per-stream engine config from the template
   platform/         SoC detection + capacity tiers
   supervisor/       process lifecycle, backoff, live reconcile
-  configwatch/      watcher.json change detection
+  configwatch/      config.json change detection
   broker/           mosquitto start + readiness
   health/           /healthz
 engine/             lean C++ person+gaze engine (copied/adapted from Argus)
 packaging/          bsext_init + make-extension-lvm
 configs/            config.json (per-stream engine config template)
-examples/           example watcher.json configs (the default baked into the extension lives here)
+examples/           example config.json configs (the default baked into the extension lives here)
 scripts/            build.sh, fetch-sdk.sh
 tools/              host tools: zone-picker(.sh/.html), record-frames.sh, framebox, boxstats
 example-client/     minimal MQTT client that prints each message's JSON

@@ -1,5 +1,6 @@
-// Package config loads and validates watcher.json, the operator-facing
-// list of RTSP streams the supervisor serves.
+// Package config loads and validates config.json, the single operator-facing
+// document: the list of RTSP streams the supervisor serves, the optional
+// MediaMTX proxy toggle, and the engine template rendered per stream.
 package config
 
 import (
@@ -14,6 +15,28 @@ import (
 // DefaultTargetFPS caps per-stream capture when a stream omits target_fps.
 const DefaultTargetFPS = 10
 
+// Zone membership modes for the per-track in_zone field. ZoneModeAny (any part
+// of the bounding box overlapping the zone) is the default; ZoneModeBase
+// requires the box's feet (bottom-center) to be inside the zone.
+const (
+	ZoneModeAny  = "any"
+	ZoneModeBase = "base"
+)
+
+// DefaultZoneColor is the zone outline color drawn on the annotated frame when a
+// stream omits zone_color (white).
+const DefaultZoneColor = "#ffffff"
+
+// Zone outline thickness in pixels. DefaultZoneThickness is used when a stream
+// omits zone_thickness; MaxZoneThickness caps it at a moderate width.
+const (
+	DefaultZoneThickness = 3
+	MaxZoneThickness     = 10
+)
+
+// zoneColorPattern validates zone_color as a "#RRGGBB" hex triplet.
+var zoneColorPattern = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
+
 // streamIDPattern validates stream IDs are filesystem/topic-safe.
 var streamIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
@@ -21,31 +44,79 @@ var streamIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // RTSPURL, FilePath (file-driven tests), or USB (the auto-detected local USB
 // camera).
 type Stream struct {
-	ID         string    `json:"id"`
-	RTSPURL    string    `json:"rtsp_url"`
-	FilePath   string    `json:"file_path"`
-	USB        bool      `json:"usb"`        // use the auto-detected local USB camera
-	USBWidth   int       `json:"usb_width"`  // optional USB capture width  (0 = engine default)
-	USBHeight  int       `json:"usb_height"` // optional USB capture height (0 = engine default)
-	USBFPS     int       `json:"usb_fps"`    // optional USB capture fps    (0 = engine default)
-	TargetFPS  int       `json:"target_fps"`
-	Confidence *float64  `json:"confidence"` // optional person-detection threshold 0..1 (nil = engine default 0.5)
-	Zone       []float64 `json:"zone"`       // optional [x0,y0,x1,y1], normalized 0..1
+	ID            string    `json:"id"`
+	RTSPURL       string    `json:"rtsp_url"`
+	FilePath      string    `json:"file_path"`
+	USB           bool      `json:"usb"`            // use the auto-detected local USB camera
+	USBWidth      int       `json:"usb_width"`      // optional USB capture width  (0 = engine default)
+	USBHeight     int       `json:"usb_height"`     // optional USB capture height (0 = engine default)
+	USBFPS        int       `json:"usb_fps"`        // optional USB capture fps    (0 = engine default)
+	TargetFPS     int       `json:"target_fps"`
+	Confidence    *float64  `json:"confidence"`     // optional person-detection threshold 0..1 (nil = engine default 0.5)
+	Zone          []float64 `json:"zone"`           // optional [x0,y0,x1,y1], normalized 0..1
+	ZoneMode      string    `json:"zone_mode"`      // zone membership test: "any" (default) or "base"
+	ZoneColor     string    `json:"zone_color"`     // zone outline color "#RRGGBB" (default DefaultZoneColor)
+	ZoneThickness int       `json:"zone_thickness"` // zone outline width in px, 1..MaxZoneThickness (default 1)
 }
 
-// Watcher is the parsed watcher.json document.
+// Mediamtx optionally runs a bundled MediaMTX instance alongside the engines,
+// supervised by the watcher. Its purpose is to proxy secure (rtsps) cameras --
+// e.g. UniFi Protect -- down to plain RTSP the engine can consume. Disabled
+// unless Enabled is true, so existing deployments are unaffected.
+type Mediamtx struct {
+	Enabled bool   `json:"enabled"`
+	Config  string `json:"config"` // optional explicit mediamtx.yml path (overrides discovery)
+}
+
+// Watcher is the parsed config.json document. Engine holds the per-stream engine
+// template verbatim (rendered per stream by internal/configgen); it is optional,
+// and when omitted the packaged default's engine block is used.
 type Watcher struct {
-	Streams []Stream `json:"streams"`
+	Streams  []Stream        `json:"streams"`
+	Mediamtx Mediamtx        `json:"mediamtx"`
+	Engine   json.RawMessage `json:"engine"`
 }
 
-// SearchPaths returns the watcher.json discovery order, first-found-wins.
+// MediamtxSearchPaths returns the mediamtx.yml discovery order, first-found-wins.
 // packageDefault is the fallback shipped inside the extension directory.
-func SearchPaths(packageDefault string) []string {
+func MediamtxSearchPaths(packageDefault string) []string {
 	return []string{
-		"/storage/sd/watcher.json",
-		"/storage/sd/configs/watcher.json",
-		"/storage/ssd/watcher.json",
-		"/storage/ssd/configs/watcher.json",
+		"/storage/sd/configs/mediamtx.yml",
+		"/storage/sd/mediamtx.yml",
+		"/storage/ssd/configs/mediamtx.yml",
+		"/storage/ssd/mediamtx.yml",
+		packageDefault,
+	}
+}
+
+// ResolveMediamtxConfig returns the mediamtx.yml to use: the explicit override
+// when set (and present), else the first existing discovery path. Lets operators
+// drop a tuned mediamtx.yml on the SD card without reinstalling the extension.
+func ResolveMediamtxConfig(explicit, packageDefault string) (string, error) {
+	if explicit != "" {
+		if info, err := os.Stat(explicit); err == nil && !info.IsDir() {
+			return explicit, nil
+		}
+		return "", fmt.Errorf("mediamtx config %q not found", explicit)
+	}
+	paths := MediamtxSearchPaths(packageDefault)
+	for _, p := range paths {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("mediamtx.yml not found in any of: %s", strings.Join(paths, ", "))
+}
+
+// ConfigSearchPaths returns the config.json discovery order, first-found-wins.
+// The standard operator location is /storage/sd/configs/config.json;
+// packageDefault is the fallback shipped inside the extension directory.
+func ConfigSearchPaths(packageDefault string) []string {
+	return []string{
+		"/storage/sd/configs/config.json",
+		"/storage/sd/config.json",
+		"/storage/ssd/configs/config.json",
+		"/storage/ssd/config.json",
 		packageDefault,
 	}
 }
@@ -58,10 +129,32 @@ func Discover(paths []string) (string, error) {
 			return p, nil
 		}
 	}
-	return "", fmt.Errorf("watcher.json not found in any of: %s", strings.Join(paths, ", "))
+	return "", fmt.Errorf("config.json not found in any of: %s", strings.Join(paths, ", "))
 }
 
-// Load reads, parses, defaults, and validates a watcher.json file.
+// EngineTemplate returns the engine template to render per stream: the loaded
+// document's own "engine" block when present, otherwise the "engine" block of
+// the packaged default config.json. This lets a minimal operator config carry
+// only streams (+ mediamtx) and inherit the packaged engine defaults.
+func EngineTemplate(w Watcher, packageDefault string) (json.RawMessage, error) {
+	if len(w.Engine) > 0 {
+		return w.Engine, nil
+	}
+	data, err := os.ReadFile(packageDefault)
+	if err != nil {
+		return nil, fmt.Errorf("engine block omitted and packaged default unreadable (%s): %w", packageDefault, err)
+	}
+	var pkg Watcher
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return nil, fmt.Errorf("parse packaged default %s: %w", packageDefault, err)
+	}
+	if len(pkg.Engine) == 0 {
+		return nil, fmt.Errorf("no engine block in config and none in packaged default %s", packageDefault)
+	}
+	return pkg.Engine, nil
+}
+
+// Load reads, parses, defaults, and validates a config.json file.
 func Load(path string) (Watcher, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -77,6 +170,15 @@ func Load(path string) (Watcher, error) {
 		if w.Streams[i].TargetFPS == 0 {
 			w.Streams[i].TargetFPS = DefaultTargetFPS
 		}
+		if w.Streams[i].ZoneMode == "" {
+			w.Streams[i].ZoneMode = ZoneModeAny
+		}
+		if w.Streams[i].ZoneColor == "" {
+			w.Streams[i].ZoneColor = DefaultZoneColor
+		}
+		if w.Streams[i].ZoneThickness == 0 {
+			w.Streams[i].ZoneThickness = DefaultZoneThickness
+		}
 	}
 	if err := w.Validate(); err != nil {
 		return Watcher{}, err
@@ -88,7 +190,7 @@ func Load(path string) (Watcher, error) {
 // each stream names a source.
 func (w Watcher) Validate() error {
 	if len(w.Streams) == 0 {
-		return fmt.Errorf("watcher.json defines no streams")
+		return fmt.Errorf("config.json defines no streams")
 	}
 	seen := make(map[string]bool, len(w.Streams))
 	for _, s := range w.Streams {
@@ -140,6 +242,15 @@ func (w Watcher) Validate() error {
 				return fmt.Errorf("stream %q zone must have x0<x1 and y0<y1, got [%g,%g,%g,%g]",
 					s.ID, s.Zone[0], s.Zone[1], s.Zone[2], s.Zone[3])
 			}
+		}
+		if s.ZoneMode != "" && s.ZoneMode != ZoneModeAny && s.ZoneMode != ZoneModeBase {
+			return fmt.Errorf("stream %q zone_mode = %q must be %q or %q", s.ID, s.ZoneMode, ZoneModeAny, ZoneModeBase)
+		}
+		if s.ZoneColor != "" && !zoneColorPattern.MatchString(s.ZoneColor) {
+			return fmt.Errorf("stream %q zone_color = %q must be a %q hex color", s.ID, s.ZoneColor, "#RRGGBB")
+		}
+		if s.ZoneThickness != 0 && (s.ZoneThickness < 1 || s.ZoneThickness > MaxZoneThickness) {
+			return fmt.Errorf("stream %q zone_thickness = %d is out of range [1,%d]", s.ID, s.ZoneThickness, MaxZoneThickness)
 		}
 	}
 	return nil

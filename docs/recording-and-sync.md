@@ -13,7 +13,7 @@ For each camera the player exposes two independent outputs:
 | **Annotated MJPEG** | `http://<player>:<port>/video` | ~detector fps | video frames with boxes drawn on them, each stamped with `frame_seq` |
 | **Analytics (MQTT)** | `bs/argus/<id>/analytics` on `<player>:1883` | ~`period_ms` (default 1/s) | `frame_seq`, `frame_ts`, and the structured `tracks[]` (person/face boxes) |
 
-`port = 20200 + the stream's 0-based index in watcher.json` (so `lobby`→20200, `entrance`→20201, `aisle`→20202 for the sample config). Also `http://<player>:<port>/image` = latest single JPEG snapshot.
+`port = 20200 + the stream's 0-based index in config.json` (so `lobby`→20200, `entrance`→20201, `aisle`→20202 for the sample config). Also `http://<player>:<port>/image` = latest single JPEG snapshot.
 
 **The join key is `frame_seq`** (a monotonic per-capture counter). Each MQTT message names the `frame_seq` of the frame its boxes came from; that same number is burned into the matching video frame's stamp. Match them and you have structured boxes attached to a specific recorded frame. `frame_ts` (epoch-ms wall clock) is a secondary, human-friendly key.
 

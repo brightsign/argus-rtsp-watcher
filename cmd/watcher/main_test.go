@@ -7,15 +7,20 @@ import (
 
 	"argus-rtsp-watcher/internal/config"
 	"argus-rtsp-watcher/internal/configgen"
+	"argus-rtsp-watcher/internal/supervisor"
 )
 
 func loadTemplateForTest(t *testing.T) []byte {
 	t.Helper()
-	data, err := os.ReadFile("../../configs/config.json")
+	w, err := config.Load("../../configs/config.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return data
+	tpl, err := config.EngineTemplate(w, "../../configs/config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tpl
 }
 
 func TestPreviewPortAssignsSequentially(t *testing.T) {
@@ -41,12 +46,16 @@ func TestBuildSpecsProducesEngineAndPreviewPerStream(t *testing.T) {
 		{ID: "b", RTSPURL: "rtsp://h/b", TargetFPS: 10},
 	}}
 
-	specs, err := buildSpecs(w, opts, "/opt/ext/argus-engine", "/opt/ext", nil)
+	specs, err := buildSpecs(w, opts, "/opt/ext/argus-engine", "/opt/ext", "/cfg/config.json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(specs) != 4 {
-		t.Fatalf("got %d specs, want 4", len(specs))
+	// 2 streams -> 4 engine+preview specs, plus the always-on config-server spec.
+	if len(specs) != 5 {
+		t.Fatalf("got %d specs, want 5", len(specs))
+	}
+	if last := specs[len(specs)-1]; last.ID != "config-server" {
+		t.Errorf("expected config-server spec last, got %q", last.ID)
 	}
 
 	wantIDs := []string{"a", "a:preview", "b", "b:preview"}
@@ -89,6 +98,64 @@ func TestBuildSpecsProducesEngineAndPreviewPerStream(t *testing.T) {
 	for _, id := range []string{"a", "b"} {
 		if info, err := os.Stat(configgen.FramesDir(opts, id)); err != nil || !info.IsDir() {
 			t.Errorf("frames dir for %s not created: %v", id, err)
+		}
+	}
+}
+
+func TestBuildSpecsAddsMediamtxWhenEnabled(t *testing.T) {
+	opts := configgen.Options{TemplateJSON: loadTemplateForTest(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	extDir := t.TempDir()
+	ymlPath := filepath.Join(extDir, "mediamtx.yml")
+	if err := os.WriteFile(ymlPath, []byte("rtsp: yes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := config.Watcher{
+		Streams:  []config.Stream{{ID: "a", RTSPURL: "rtsp://h/a", TargetFPS: 10}},
+		Mediamtx: config.Mediamtx{Enabled: true},
+	}
+
+	specs, err := buildSpecs(w, opts, filepath.Join(extDir, "argus-engine"), extDir, "/cfg/config.json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// engine + preview + mediamtx + config-server
+	if len(specs) != 4 {
+		t.Fatalf("got %d specs, want 4", len(specs))
+	}
+	var m supervisor.Spec
+	for _, s := range specs {
+		if s.ID == "mediamtx" {
+			m = s
+		}
+	}
+	if m.ID != "mediamtx" {
+		t.Fatal("expected a mediamtx spec")
+	}
+	if m.Bin != filepath.Join(extDir, "mediamtx") {
+		t.Errorf("mediamtx Bin=%q", m.Bin)
+	}
+	if len(m.Args) != 1 || m.Args[0] != ymlPath {
+		t.Errorf("mediamtx Args=%v want [%s]", m.Args, ymlPath)
+	}
+	if m.Fingerprint == "" {
+		t.Error("mediamtx spec needs a fingerprint")
+	}
+}
+
+func TestBuildSpecsSkipsMediamtxWhenConfigMissing(t *testing.T) {
+	opts := configgen.Options{TemplateJSON: loadTemplateForTest(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	extDir := t.TempDir() // no mediamtx.yml present
+	w := config.Watcher{
+		Streams:  []config.Stream{{ID: "a", RTSPURL: "rtsp://h/a", TargetFPS: 10}},
+		Mediamtx: config.Mediamtx{Enabled: true},
+	}
+	specs, err := buildSpecs(w, opts, filepath.Join(extDir, "argus-engine"), extDir, "/cfg/config.json", nil)
+	if err != nil {
+		t.Fatalf("missing mediamtx.yml must not fail the build: %v", err)
+	}
+	for _, s := range specs {
+		if s.ID == "mediamtx" {
+			t.Error("mediamtx spec must be skipped when its config is missing")
 		}
 	}
 }

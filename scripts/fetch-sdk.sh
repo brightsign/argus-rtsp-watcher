@@ -67,13 +67,16 @@ if [ -z "${INSTALLER}" ] || [ ! -f "${INSTALLER}" ]; then
     cat <<EOF
 No cross-compile SDK found in the shared cache, and no toolchain installer on hand.
 
-The SDK is provisioned once per build box by the brightsign-sdk-builder repo,
+The SDK is provisioned ONCE PER BUILD BOX by the brightsign-sdk-builder repo,
 which downloads the BrightSign OS source, builds the custom SDK, and installs it
-into the shared cache this repo reads. From a checkout parallel to this one:
+into a shared cache that sits OUTSIDE any single repo. Clone and build it once:
 
-    cd ../brightsign-sdk-builder && make build
+    git clone https://github.com/brightsign/brightsign-sdk-builder.git
+    cd brightsign-sdk-builder && make build
 
-That populates ${SDK_DIR}. Then re-run this build.
+That populates ${SDK_DIR}. After that first (~multi-hour) run, this and our other
+example extensions all cross-compile against the same cached SDK/toolkit/models --
+no per-repo SDK rebuild. Then re-run this build.
 
 Alternatively, if you already have a brightsign-x86_64-cobra-toolchain-*.sh
 installer, install from it directly:

@@ -1,14 +1,53 @@
 #pragma once
 
-// Pure feet-in-zone predicate behind the per-track in_zone MQTT field. Kept
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <string>
+
+// Pure zone-membership predicates behind the per-track in_zone MQTT field. Kept
 // header-only and dependency-free (no OpenCV/NPU) so it can be unit tested on
 // the host, mirroring orchestration/frame_stamp.h.
 namespace zone {
 
+// How a track's bounding box is tested against the zone for the in_zone field.
+//   Base: the box's feet -- bottom-center -- must fall inside the zone.
+//   Any:  any part of the box overlapping the zone counts.
+// Any is the default (more permissive); operators pick per stream via config.
+enum class Mode { Any, Base };
+
 // Shared configuration for a custom detection zone (normalized 0..1
 // fractions of frame size), threaded from AppConfig through PipelineConfig
-// and MqttPublisherCfg down to the per-track feet_in_zone check.
-struct ZoneCfg { bool enabled{false}; float x0{0}, y0{0}, x1{0}, y1{0}; };
+// and MqttPublisherCfg down to the per-track in_zone check.
+struct ZoneCfg {
+  bool enabled{false};
+  Mode mode{Mode::Any};
+  float x0{0}, y0{0}, x1{0}, y1{0};
+  // Outline color for the drawn zone, as 0..255 channels (default white).
+  int r{255}, g{255}, b{255};
+  // Outline width in pixels (default 3).
+  int thickness{3};
+};
+
+// Parse "#RRGGBB" (leading '#' optional) into r,g,b (0..255). Returns true and
+// writes the channels on success; returns false and leaves them unchanged for a
+// malformed string, so callers keep their defaults.
+inline bool parse_hex_color(const std::string& s, int& r, int& g, int& b) noexcept {
+  const std::string hex = (!s.empty() && s[0] == '#') ? s.substr(1) : s;
+  if (hex.size() != 6) return false;
+  int v[6];
+  for (int i = 0; i < 6; ++i) {
+    const char c = hex[i];
+    if (c >= '0' && c <= '9') v[i] = c - '0';
+    else if (c >= 'a' && c <= 'f') v[i] = c - 'a' + 10;
+    else if (c >= 'A' && c <= 'F') v[i] = c - 'A' + 10;
+    else return false;
+  }
+  r = v[0] * 16 + v[1];
+  g = v[2] * 16 + v[3];
+  b = v[4] * 16 + v[5];
+  return true;
+}
 
 // Returns true iff the box's feet -- bottom-center ((bx0+bx1)/2, by1) -- fall
 // inside the normalized zone rect [zx0,zy0,zx1,zy1] (fractions of frame size).
@@ -21,5 +60,61 @@ inline bool feet_in_zone(float bx0, float bx1, float by1,
   const float fy = by1 / static_cast<float>(frame_h);
   return fx >= zx0 && fx <= zx1 && fy >= zy0 && fy <= zy1;
 }
+
+// Returns true iff any part of the box [bx0,by0,bx1,by1] (pixels) overlaps the
+// normalized zone rect [zx0,zy0,zx1,zy1] (fractions of frame size). This is the
+// standard axis-aligned rectangle-intersection test, inclusive on all edges.
+// Returns false for a non-positive frame size.
+inline bool any_in_zone(float bx0, float by0, float bx1, float by1,
+                        int frame_w, int frame_h,
+                        float zx0, float zy0, float zx1, float zy1) noexcept {
+  if (frame_w <= 0 || frame_h <= 0) return false;
+  const float nx0 = bx0 / static_cast<float>(frame_w);
+  const float ny0 = by0 / static_cast<float>(frame_h);
+  const float nx1 = bx1 / static_cast<float>(frame_w);
+  const float ny1 = by1 / static_cast<float>(frame_h);
+  return nx0 <= zx1 && nx1 >= zx0 && ny0 <= zy1 && ny1 >= zy0;
+}
+
+// Returns true iff the box is inside the zone under the given mode. The box is
+// given in pixels as [bx0,by0,bx1,by1]; the zone is normalized 0..1.
+inline bool box_in_zone(Mode mode,
+                        float bx0, float by0, float bx1, float by1,
+                        int frame_w, int frame_h,
+                        float zx0, float zy0, float zx1, float zy1) noexcept {
+  if (mode == Mode::Base) {
+    return feet_in_zone(bx0, bx1, by1, frame_w, frame_h, zx0, zy0, zx1, zy1);
+  }
+  return any_in_zone(bx0, by0, bx1, by1, frame_w, frame_h, zx0, zy0, zx1, zy1);
+}
+
+// EventWindow is the rolling-window confirmation behind the low-latency in-zone
+// flash event. It fires once at least min_hits frames carrying an in-zone
+// detection fall within the last window_ms, then rate-limits further fires to
+// one per repeat_ms while activity continues. Pure and stateful (no clock of its
+// own; the caller passes a monotonic now_ms), so it is host unit-testable.
+struct EventWindow {
+  int64_t window_ms{1000};  // lookback window
+  std::size_t min_hits{2};  // in-window frames needed to fire
+  int64_t repeat_ms{500};   // minimum gap between fires
+
+  std::deque<int64_t> hits;
+  int64_t last_fire_ms{-1};  // -1 => never fired
+
+  // record folds one frame in: in_zone marks whether any box was in the zone this
+  // frame, now_ms is the current monotonic time. Returns true when an event
+  // should be emitted for this frame.
+  bool record(bool in_zone, int64_t now_ms) {
+    if (in_zone) hits.push_back(now_ms);
+    while (!hits.empty() && now_ms - hits.front() > window_ms) hits.pop_front();
+    if (hits.size() < min_hits) return false;
+    if (last_fire_ms >= 0 && now_ms - last_fire_ms < repeat_ms) return false;
+    last_fire_ms = now_ms;
+    return true;
+  }
+
+  // reset clears the window (e.g. when the zone is disabled).
+  void reset() { hits.clear(); }
+};
 
 } // namespace zone

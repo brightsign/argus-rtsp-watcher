@@ -1378,6 +1378,7 @@ void Orchestrator::face_loop_threadfn() noexcept {
         config.model_input_height = face_runner_->spec().input_size.h;
         config.model_name = "RetinaFace";
         config.flip_horizontal = cfg_.flip_horizontal;  // Mirror correction
+        config.zone = cfg_.zone;  // full ZoneCfg incl. membership mode
 
         // Wrap the member mailbox in a shared_ptr wrapper that doesn't own it
         std::shared_ptr<FrameMailbox> mb_wrapper(
@@ -1432,6 +1433,7 @@ void Orchestrator::yolo_loop_threadfn() noexcept {
         config.blur_config = cfg_.blur_config;  // Pass blur config for person blur
         config.flip_horizontal = cfg_.flip_horizontal;  // Mirror correction
         config.enable_frame_stamp = cfg_.enable_frame_stamp;  // Burn frame_seq/frame_ts stamp
+        config.zone = cfg_.zone;  // full ZoneCfg incl. membership mode
 
         // Wrap the member mailbox in a shared_ptr wrapper that doesn't own it
         std::shared_ptr<FrameMailbox> mb_wrapper(

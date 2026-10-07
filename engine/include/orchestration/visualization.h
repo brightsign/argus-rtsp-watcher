@@ -3,6 +3,7 @@
 #include <opencv2/core.hpp>
 #include <cstdint>
 #include "output/face_blur.h"
+#include "orchestration/zone.h"
 
 // Forward declarations
 class IModelRunner;
@@ -25,7 +26,8 @@ void process_inference_results(
     IModelRunner* second_runner = nullptr,
     FusionResults* fusion_output = nullptr,
     const output::BlurConfig& blur_config = output::BlurConfig{},
-    bool flip_h = false) noexcept;
+    bool flip_h = false,
+    const zone::ZoneCfg& zone = zone::ZoneCfg{}) noexcept;
 
 // Save frame as JPEG every Nth frame (controlled by frame_idx % 3)
 void save_debug_jpg(

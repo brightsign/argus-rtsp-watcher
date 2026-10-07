@@ -82,7 +82,7 @@ Do this and report a PASS/FAIL with the per-channel table:
    Verify:  ffprobe -rtsp_transport tcp rtsp://STREAM_HOST_IP:8554/test   (expect H.264 1280x720)
 3. Make sure test/loop-stream/watcher-test.json has all 8 channels' rtsp_url set to
    rtsp://STREAM_HOST_IP:8554/test , then copy it to the player (watcher hot-reloads it):
-   scp test/loop-stream/watcher-test.json brightsign@PLAYER:/storage/sd/watcher.json
+   scp test/loop-stream/watcher-test.json brightsign@PLAYER:/storage/sd/config.json
 4. Confirm all 8 channels publish:
    mosquitto_sub -h PLAYER -t 'bs/argus/#' -C 16 -v    (expect test1..test8)
 5. Measure and compare (run long; longer = tighter):
@@ -95,6 +95,6 @@ Do this and report a PASS/FAIL with the per-channel table:
 Guardrails:
 - Do not commit any video/media (they're gitignored; keep them out of git).
 - The player SSH is a REPL, not a shell; use scp for file copy, and the watcher
-  hot-reloads /storage/sd/watcher.json (no reboot needed to change the config).
+  hot-reloads /storage/sd/config.json (no reboot needed to change the config).
 - Stop the stream when done:  podman stop argus-loop-stream
 ```

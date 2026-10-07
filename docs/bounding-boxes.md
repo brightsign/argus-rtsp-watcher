@@ -29,7 +29,7 @@ Each stream's engine detects people (YOLOX), detects faces and gaze (RetinaFace 
 
 ## Topics
 
-The stream `id` from `watcher.json` becomes the topic segment. For the example config:
+The stream `id` from `config.json` becomes the topic segment. For the example config:
 
 | Stream `id` | Topic |
 |-------------|-------|
@@ -99,7 +99,7 @@ Note the second track has **no `gaze` object** — the `gaze` key is present onl
 |-------|------|---------|
 | `schema` | string | Always `analytics/v7.0`. |
 | `ts` | float | Timestamp in seconds (monotonic since engine start). |
-| `device` | string | The stream `id` (from `watcher.json`). |
+| `device` | string | The stream `id` (from `config.json`). |
 | `stream` | string | Stream identifier. |
 | `frame_seq`, `frame_ts` | int | **Video/MQTT sync key.** `frame_seq` is the capture sequence number burned into the matching annotated frame's stamp; `frame_ts` is that frame's capture wall-clock time, epoch milliseconds. See the "Frame stamp" section below. |
 | `frame_w`, `frame_h` | int | **Source frame dimensions in pixels — the coordinate space for all boxes.** |
@@ -134,7 +134,7 @@ Note the second track has **no `gaze` object** — the `gaze` key is present onl
 | `exit` | bool | True on the frame the person left. |
 | `uniform` | object | `{class, confidence, is_employee}`. **Vestigial** — always `{"unknown", 0.0, false}` in this build. |
 | `gaze` | object? | Present only when a face matched this person. `detected` (1 = looking at display), `time` (accumulated seconds of gaze), and **`face_bbox`** `[x0,y0,x1,y1]` — the **face bounding box**, pixels. |
-| `in_zone` | bool | Present only when the stream has a custom `zone` configured. `true` when this person's feet (box bottom-center) are inside that zone. Additive to `zones`. |
+| `in_zone` | bool | Present only when the stream has a custom `zone` configured. `true` when this person is in the zone under the stream's `zone_mode`: `any` (default — any part of the box overlaps the zone) or `base` (box feet/bottom-center inside). Additive to `zones`. |
 
 ## The bounding boxes, precisely
 
@@ -205,9 +205,30 @@ Both stamps are stacked in the **lower-left corner**: the human-readable line is
 
 ## Custom zone
 
-When you add a `zone` field to a stream in `watcher.json`, each track will report an additional `in_zone` boolean: `true` when the person's feet (box bottom-center) are inside the normalized bounding box. The zone is specified as `[x0,y0,x1,y1]` with all values in the range `[0,1]` (normalized frame coordinates), e.g., `"zone": [0.146, 0.104, 0.781, 0.972]`. This is useful for counting people in an "important area" (checkout queue, parking space, aisle) without setting up separate ROI engines.
+When you add a `zone` field to a stream in `config.json`, each track will report an additional `in_zone` boolean. The zone is specified as `[x0,y0,x1,y1]` with all values in the range `[0,1]` (normalized frame coordinates), e.g., `"zone": [0.146, 0.104, 0.781, 0.972]`. This is useful for counting people in an "important area" (checkout queue, parking space, aisle) without setting up separate ROI engines.
 
-Editing a stream's `zone` in `watcher.json` triggers a live restart of only that camera's engine — no need to reboot the extension. Use `tools/zone-picker.html` in your browser to visually draw the zone and export its coordinates. The companion `tools/boxstats` tool can answer offline area-range questions from recorded video.
+An optional per-stream `zone_mode` selects how `in_zone` is decided:
+
+- `"any"` (default): `true` when **any part** of the person's bounding box overlaps the zone.
+- `"base"`: `true` only when the person's **feet** (box bottom-center) are inside the zone.
+
+An optional per-stream `zone_color` sets the outline color drawn on the annotated frame, as a `#RRGGBB` hex string (default `#ffffff`, white). An optional `zone_thickness` sets the outline width in pixels, `1`–`10` (default `3`).
+
+```json
+{ "id": "checkout", "rtsp_url": "rtsp://…", "zone": [0.146, 0.104, 0.781, 0.972], "zone_mode": "base", "zone_color": "#ff8800", "zone_thickness": 4 }
+```
+
+Editing a stream's `zone`, `zone_mode`, `zone_color`, or `zone_thickness` in `config.json` triggers a live restart of only that camera's engine — no need to reboot the extension. The on-player **zone dashboard** (port `20300`) lets you draw the zone on each camera's live view, flip the any/base toggle, pick the outline color and line width, and Save per pane. The companion `tools/boxstats` tool can answer offline area-range questions from recorded video.
+
+### Low-latency in-zone event (`zone_event`)
+
+The per-track `in_zone` field above rides the regular analytics message, which is throttled to one publish per second. For a fast UI reaction (e.g. flashing a video wall), a stream with a zone also publishes a dedicated event on a sibling topic, **`bs/argus/<id>/zone_event`**, the moment **two in-zone detections land within a rolling 1-second window** (using the same `any`/`base` predicate). It then repeats at most every 500 ms while in-zone activity continues, and stops when it ends. This bypasses the 1 Hz analytics tick, so consumers react within a frame or two instead of up to a second.
+
+```json
+{ "device_id": "checkout", "event": "in_zone", "in_zone": 2, "mode": "base", "ts_ms": 1733520000123 }
+```
+
+`in_zone` is the number of tracks inside the zone on the firing frame; `ts_ms` is a monotonic millisecond timestamp. The bundled video walls (`presentation/`, `presentation2/`) consume this topic to flash a pane for ~1.5 s per event.
 
 ## Consuming the data
 

@@ -1,0 +1,35 @@
+# Default MediaMTX config for the Argus extension's optional on-player proxy.
+#
+# This file is INERT until you opt in: set the following in watcher.json
+#   "mediamtx": { "enabled": true }
+# and the watcher will supervise MediaMTX (crash-restart, clean shutdown).
+#
+# Purpose: pull a SECURE (rtsps) camera -- e.g. UniFi Protect -- and re-serve it
+# as PLAIN rtsp://localhost:8554/<path> that an engine stream can consume. Point a
+# watcher.json stream's "rtsp_url" at the local path below.
+#
+# This packaged copy ships placeholders. Edit the OVERRIDE copy on the SD card so
+# it survives reinstalls (first found wins):
+#   /storage/sd/configs/mediamtx.yml
+#   /storage/sd/mediamtx.yml
+# (or set "mediamtx": {"config": "/abs/path.yml"} in watcher.json).
+
+rtsp: yes
+rtspAddress: :8554        # plain RTSP the engine consumes (rtsp://localhost:8554/<path>)
+
+# Not needed for a plain-out proxy.
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+
+paths:
+  # Example: proxy one UniFi Protect camera.
+  #   - set "rtsp_url": "rtsp://localhost:8554/unifi1" on a watcher.json stream
+  #   - fill in the real secure source below (user, pass, NVR IP, stream id)
+  unifi1:
+    source: rtsps://USER:PASS@NVR-IP:7441/STREAM-ID?enableSrtp
+    sourceOnDemand: yes
+    # UniFi NVRs use a self-signed cert. If MediaMTX refuses it, pin the cert's
+    # SHA-256 here (openssl x509 -in nvr.crt -noout -fingerprint -sha256):
+    # sourceFingerprint: AA:BB:CC:...

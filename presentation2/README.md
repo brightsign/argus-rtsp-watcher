@@ -26,6 +26,20 @@ A port with no listener leaves that pane **solid black** and is retried every
 few seconds, so feeds may start, stop, and restart without a reload. With
 fewer than eight streams configured, the unused panes simply stay black.
 
+## Live in-zone detection border
+
+Each pane **flashes a bright red border while a person is detected inside that
+stream's configured zone**. The engine fires a low-latency event the instant two
+in-zone detections land within a 1-second window (keyed off the stream's `any`/`base`
+zone mode), published on **MQTT-over-WebSockets** (`ws://127.0.0.1:9001`,
+`bs/argus/<id>/zone_event`) and consumed via a tiny inline MQTT client — no
+external library, since the player is offline. Each event (re)lights the pane for ~1.5s,
+clearing when events stop; a pane with no configured zone never flashes. It needs the watcher's mosquitto to
+serve WebSockets (`listener 9001 protocol websockets`, broker built
+`-DWITH_WEBSOCKETS=ON`). The pane→stream mapping is `STREAM_IDS` at the top of
+`index.html` and **must match the order of `streams[]` in `config.json`**; leave a slot
+`""` for a pane with no stream (it never flashes).
+
 ## Files
 
 | File          | Purpose                                                    |
@@ -80,5 +94,5 @@ curl $AUTH -X PUT $BASE/control/reboot/
   then attach `chrome://inspect` to `<player-ip>:2999`. Remove it before
   production (the inspector buffers console output in memory).
 - The ports only listen while the watcher is running with that many streams
-  configured in `watcher.json`; ports beyond the configured stream count stay
+  configured in `config.json`; ports beyond the configured stream count stay
   black by design.

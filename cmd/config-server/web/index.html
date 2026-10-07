@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argus Zone Dashboard</title>
+<style>
+  :root { color-scheme: light dark; --accent: #00e5ff; }
+  body { font: 14px system-ui, sans-serif; margin: 0; padding: 16px 16px 80px; }
+  h1 { margin: 0 0 4px; }
+  .sub { opacity: 0.7; margin: 0 0 16px; }
+  #cams { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
+  .cam { border: 1px solid rgba(127,127,127,.35); border-radius: 8px; padding: 10px; }
+  .cam h2 { font-size: 15px; margin: 0 0 8px; }
+  .cam .port { opacity: .6; font-weight: normal; font-size: 12px; }
+  .wrap { position: relative; display: block; background: #000; min-height: 120px; }
+  .snap { width: 100%; display: block; }
+  .ov { position: absolute; inset: 0; cursor: crosshair; width: 100%; height: 100%; }
+  .meta { margin-top: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  code { background: rgba(127,127,127,.2); padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+  button { padding: 5px 12px; border-radius: 6px; border: 1px solid rgba(127,127,127,.5); background: transparent; cursor: pointer; }
+  button.primary { background: var(--accent); color: #002; border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 16px; background: rgba(20,20,20,.92);
+         border-top: 1px solid rgba(127,127,127,.4); display: flex; gap: 12px; align-items: center; }
+  #status { opacity: .85; }
+  .err { color: #ff6b6b; }
+  .ok { color: #51cf66; }
+  .cardstatus { font-size: 12px; opacity: .85; flex: 1 1 100%; }
+  /* base/any sliding toggle: left = any (default), right = base */
+  .modesw { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; user-select: none; }
+  .modesw .lbl { opacity: .6; }
+  .modesw .lbl.on { opacity: 1; font-weight: 600; }
+  .modesw .track { position: relative; width: 40px; height: 20px; border-radius: 10px;
+                   background: rgba(127,127,127,.4); cursor: pointer; transition: background .15s; }
+  .modesw .track.base { background: var(--accent); }
+  .modesw .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+                  background: #fff; transition: left .15s; }
+  .modesw .track.base .knob { left: 22px; }
+  .colorpick { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; opacity: .85; }
+  .colorpick input[type=color] { width: 28px; height: 22px; padding: 0; border: 1px solid rgba(127,127,127,.5);
+                                 border-radius: 4px; background: transparent; cursor: pointer; }
+  .thickpick { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; opacity: .85; }
+  .thickpick input[type=range] { width: 80px; }
+  .thickpick .thickval { min-width: 28px; }
+</style>
+</head>
+<body>
+<h1>Argus Zone Dashboard</h1>
+<p class="sub">Draw a detection zone on each camera's live view, pick its match mode (any / base), outline color, and line width, then Save that pane. Changes apply on the player within a few seconds (no reboot). The zone shows as a faint green outline on the video feed. <b>any</b> = any part of a person's box in the zone counts; <b>base</b> = only when their feet are in it.</p>
+<div id="cams"></div>
+
+<div id="bar">
+  <button class="primary" id="save" disabled>Save &amp; apply</button>
+  <button id="reload">Reload from player</button>
+  <span id="status"></span>
+</div>
+
+<script>
+"use strict";
+(function () {
+  var PREVIEW_BASE = 20200;   // stream index i -> live snapshot on PREVIEW_BASE + i
+  var camsEl = document.getElementById("cams");
+  var statusEl = document.getElementById("status");
+  var globalSaveBtn = document.getElementById("save");
+  var cfg = null;             // the full parsed config.json; we only edit streams[i].zone
+  var cards = [];             // { idx, saveBtn } per rendered card, for dirty tracking
+  var baseline = [];          // last-saved signature per stream; Save enables only on change
+  var msgTimers = new WeakMap(); // per status element: timer that auto-hides a "saved" message
+
+  function setStatus(msg, cls) {
+    statusEl.textContent = msg;
+    statusEl.className = cls || "";
+  }
+
+  // zoneSig captures just the editable fields, so dirty tracking ignores
+  // unrelated config (engine block, etc.) the dashboard never touches.
+  function zoneSig(s) {
+    return JSON.stringify([s.zone || null, s.zone_mode, s.zone_color, s.zone_thickness]);
+  }
+  function snapshotBaseline() {
+    baseline = Array.isArray(cfg && cfg.streams) ? cfg.streams.map(zoneSig) : [];
+  }
+  // Enable each pane's Save (and the global Save) only when that pane differs
+  // from the last-saved state; grey them out otherwise.
+  function refreshDirty() {
+    var anyDirty = false;
+    cards.forEach(function (c) {
+      var dirty = zoneSig(cfg.streams[c.idx]) !== baseline[c.idx];
+      c.saveBtn.disabled = !dirty;
+      if (dirty) anyDirty = true;
+    });
+    if (globalSaveBtn) globalSaveBtn.disabled = !anyDirty;
+  }
+
+  // showMsg writes a status line and, for a successful save, auto-hides it after
+  // 5s. Other states (saving / errors) persist until the next action.
+  function showMsg(el, msg, cls, isCard) {
+    el.textContent = msg;
+    el.className = (isCard ? "cardstatus " : "") + (cls || "");
+    var prev = msgTimers.get(el);
+    if (prev) clearTimeout(prev);
+    if (cls === "ok" && msg.indexOf("saved") === 0) {
+      msgTimers.set(el, setTimeout(function () {
+        el.textContent = "";
+        el.className = isCard ? "cardstatus" : "";
+      }, 5000));
+    }
+  }
+
+  // Map a point on the displayed canvas to normalized 0..1 image coords.
+  function norm(px, py, img) {
+    return {
+      x: Math.max(0, Math.min(1, px / img.clientWidth)),
+      y: Math.max(0, Math.min(1, py / img.clientHeight)),
+    };
+  }
+
+  function fmtZone(z) {
+    if (!z) return "none";
+    var f = function (v) { return v.toFixed(3); };
+    return "[" + f(z[0]) + ", " + f(z[1]) + ", " + f(z[2]) + ", " + f(z[3]) + "]";
+  }
+
+  function makeCard(stream, idx) {
+    var card = document.createElement("div");
+    card.className = "cam";
+    var port = PREVIEW_BASE + idx;
+    card.innerHTML =
+      '<h2>' + stream.id + ' <span class="port">(preview :' + port + ')</span></h2>' +
+      '<div class="wrap"><img class="snap" alt=""><canvas class="ov"></canvas></div>' +
+      '<div class="meta">zone: <code class="zoneval">' + fmtZone(stream.zone) + '</code>' +
+      '<button class="clear">clear</button>' +
+      '<span class="modesw" title="any: any part of a person\'s box in the zone counts.' +
+      ' base: only when their feet (box bottom) are in the zone.">' +
+      '<span class="lbl lany">any</span>' +
+      '<span class="track"><span class="knob"></span></span>' +
+      '<span class="lbl lbase">base</span></span>' +
+      '<label class="colorpick" title="Zone outline color">' +
+      'color <input type="color" class="zonecolor"></label>' +
+      '<label class="thickpick" title="Zone outline width (px)">' +
+      'width <input type="range" min="1" max="10" step="1" class="zonethick">' +
+      '<span class="thickval"></span></label>' +
+      '<button class="primary savecard">Save</button>' +
+      '<span class="cardstatus"></span></div>';
+
+    var img = card.querySelector(".snap");
+    var canvas = card.querySelector(".ov");
+    var ctx = canvas.getContext("2d");
+    var zoneEl = card.querySelector(".zoneval");
+    var track = card.querySelector(".track");
+    var lblAny = card.querySelector(".lany");
+    var lblBase = card.querySelector(".lbase");
+    var colorEl = card.querySelector(".zonecolor");
+    var cardStatus = card.querySelector(".cardstatus");
+    var drag = null;
+
+    colorEl.value = cfg.streams[idx].zone_color || "#ffffff";
+    colorEl.addEventListener("input", function () {
+      cfg.streams[idx].zone_color = colorEl.value;
+      redraw();
+      refreshDirty();
+    });
+
+    var thickEl = card.querySelector(".zonethick");
+    var thickValEl = card.querySelector(".thickval");
+    thickEl.value = cfg.streams[idx].zone_thickness || 3;
+    thickValEl.textContent = thickEl.value + "px";
+    thickEl.addEventListener("input", function () {
+      cfg.streams[idx].zone_thickness = +thickEl.value;
+      thickValEl.textContent = thickEl.value + "px";
+      redraw();
+      refreshDirty();
+    });
+
+    function syncMode() {
+      var base = cfg.streams[idx].zone_mode === "base";
+      track.classList.toggle("base", base);
+      lblBase.classList.toggle("on", base);
+      lblAny.classList.toggle("on", !base);
+    }
+    track.addEventListener("click", function () {
+      cfg.streams[idx].zone_mode = cfg.streams[idx].zone_mode === "base" ? "any" : "base";
+      syncMode();
+      refreshDirty();
+    });
+    syncMode();
+
+    var saveBtn = card.querySelector(".savecard");
+    saveBtn.addEventListener("click", function () { putConfig(cardStatus, true); });
+    cards.push({ idx: idx, saveBtn: saveBtn });
+
+    function redraw() {
+      canvas.width = img.clientWidth;
+      canvas.height = img.clientHeight;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      var z = cfg.streams[idx].zone;
+      if (z && img.clientWidth) {
+        ctx.strokeStyle = cfg.streams[idx].zone_color || "#ffffff";
+        ctx.lineWidth = cfg.streams[idx].zone_thickness || 3;
+        ctx.strokeRect(z[0] * canvas.width, z[1] * canvas.height,
+                       (z[2] - z[0]) * canvas.width, (z[3] - z[1]) * canvas.height);
+      }
+      if (drag && drag.cur) {
+        ctx.strokeStyle = "var(--accent)" === "" ? "#00e5ff" : "#00e5ff";
+        ctx.lineWidth = 2;
+        var x = Math.min(drag.x, drag.cur.x), y = Math.min(drag.y, drag.cur.y);
+        ctx.strokeRect(x, y, Math.abs(drag.cur.x - drag.x), Math.abs(drag.cur.y - drag.y));
+      }
+    }
+
+    canvas.addEventListener("mousedown", function (e) {
+      var r = canvas.getBoundingClientRect();
+      drag = { x: e.clientX - r.left, y: e.clientY - r.top, cur: null };
+    });
+    canvas.addEventListener("mousemove", function (e) {
+      if (!drag) return;
+      var r = canvas.getBoundingClientRect();
+      drag.cur = { x: e.clientX - r.left, y: e.clientY - r.top };
+      redraw();
+    });
+    window.addEventListener("mouseup", function () {
+      if (!drag || !drag.cur) { drag = null; return; }
+      var a = norm(drag.x, drag.y, img), b = norm(drag.cur.x, drag.cur.y, img);
+      var x0 = Math.min(a.x, b.x), y0 = Math.min(a.y, b.y);
+      var x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y);
+      drag = null;
+      if (x1 - x0 < 0.02 || y1 - y0 < 0.02) return; // ignore tiny drags
+      cfg.streams[idx].zone = [ +x0.toFixed(4), +y0.toFixed(4), +x1.toFixed(4), +y1.toFixed(4) ];
+      zoneEl.textContent = fmtZone(cfg.streams[idx].zone);
+      redraw();
+      refreshDirty();
+    });
+    card.querySelector(".clear").addEventListener("click", function () {
+      delete cfg.streams[idx].zone;
+      zoneEl.textContent = "none";
+      redraw();
+      refreshDirty();
+    });
+
+    img.addEventListener("load", redraw);
+    window.addEventListener("resize", redraw);
+
+    // Live snapshot from the per-stream image-stream-server on the same host.
+    var base = location.protocol + "//" + location.hostname + ":" + port + "/image";
+    function refresh() { img.src = base + "?_t=" + Date.now(); }
+    refresh();
+    setInterval(refresh, 1000);
+
+    return card;
+  }
+
+  function render() {
+    camsEl.innerHTML = "";
+    cards = [];
+    if (!cfg || !Array.isArray(cfg.streams) || cfg.streams.length === 0) {
+      camsEl.innerHTML = "<p class='err'>config has no streams.</p>";
+      return;
+    }
+    cfg.streams.forEach(function (s, i) { camsEl.appendChild(makeCard(s, i)); });
+    snapshotBaseline();
+    refreshDirty();
+  }
+
+  function load() {
+    setStatus("loading config...");
+    fetch("/config", { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (j) {
+        cfg = j;
+        // Normalize the per-stream zone mode so the toggle and Save round-trip it
+        // even when the file on the player predates the field (default: any).
+        if (Array.isArray(cfg.streams)) {
+          cfg.streams.forEach(function (s) {
+            if (s.zone_mode !== "base") s.zone_mode = "any";
+            if (!/^#[0-9A-Fa-f]{6}$/.test(s.zone_color || "")) s.zone_color = "#ffffff";
+            var t = parseInt(s.zone_thickness, 10);
+            s.zone_thickness = (t >= 1 && t <= 10) ? t : 3;
+          });
+        }
+        render();
+        setStatus("loaded " + cfg.streams.length + " stream(s)", "ok");
+      })
+      .catch(function (e) { setStatus("load failed: " + e.message, "err"); });
+  }
+
+  // putConfig PUTs the full config.json and reports to the given status element.
+  // Every stream's edits live in the shared cfg object, so a Save from any pane
+  // persists the whole document -- matching the single-file config on the player.
+  // On success the baseline is reset, so every Save button greys out again.
+  function putConfig(el, isCard) {
+    if (!cfg) return;
+    showMsg(el, "saving...", "", isCard);
+    fetch("/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cfg, null, 2),
+    })
+      .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t || ("HTTP " + r.status)); }); return r.json(); })
+      .then(function () {
+        snapshotBaseline();
+        refreshDirty();
+        showMsg(el, "saved — the watcher applies changes within a few seconds", "ok", isCard);
+      })
+      .catch(function (e) { showMsg(el, "save failed: " + e.message, "err", isCard); });
+  }
+
+  globalSaveBtn.addEventListener("click", function () { putConfig(statusEl, false); });
+  document.getElementById("reload").addEventListener("click", load);
+  load();
+})();
+</script>
+</body>
+</html>

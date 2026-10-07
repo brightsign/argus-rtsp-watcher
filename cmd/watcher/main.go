@@ -38,6 +38,11 @@ const (
 	previewBasePort = 20200
 	previewBinary   = "image-stream-server"
 	previewIDSuffix = ":preview"
+
+	// mediamtxBinary is the bundled MediaMTX, staged next to the watcher; it is
+	// supervised as a single process (ID mediamtxID) when config.json enables it.
+	mediamtxBinary = "mediamtx"
+	mediamtxID     = "mediamtx"
 )
 
 func main() {
@@ -50,7 +55,8 @@ func main() {
 	}
 	extDir = filepath.Dir(extDir)
 
-	cfgPath, err := config.Discover(config.SearchPaths(filepath.Join(extDir, "watcher.json")))
+	pkgDefault := filepath.Join(extDir, "config.json")
+	cfgPath, err := config.Discover(config.ConfigSearchPaths(pkgDefault))
 	if err != nil {
 		log.Fatalf("config discovery: %v", err)
 	}
@@ -68,16 +74,16 @@ func main() {
 			len(w.Streams), tier.SafeStreams, tier.Model)
 	}
 
-	tpl, err := os.ReadFile(filepath.Join(extDir, "config.json"))
+	tpl, err := config.EngineTemplate(w, pkgDefault)
 	if err != nil {
-		log.Fatalf("read template: %v", err)
+		log.Fatalf("engine template: %v", err)
 	}
 	opts := configgen.Options{TemplateJSON: tpl, TopicPrefix: topicPrefix, MQTTHost: mqttHost, MQTTPort: mqttPort}
 
 	engineBin := filepath.Join(extDir, "argus-engine")
 	engineEnv := engineEnviron(extDir)
 
-	initialSpecs, err := buildSpecs(w, opts, engineBin, extDir, engineEnv)
+	initialSpecs, err := buildSpecs(w, opts, engineBin, extDir, cfgPath, engineEnv)
 	if err != nil {
 		log.Fatalf("build specs: %v", err)
 	}
@@ -101,7 +107,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Live reconciliation: re-read watcher.json on file change or SIGHUP and
+	// Live reconciliation: re-read config.json on file change or SIGHUP and
 	// drive the supervisor toward the new desired stream set.
 	reload := func() {
 		nw, err := config.Load(cfgPath)
@@ -109,7 +115,13 @@ func main() {
 			log.Printf("reload skipped, invalid config: %v", err)
 			return
 		}
-		specs, err := buildSpecs(nw, opts, engineBin, extDir, engineEnv)
+		ntpl, err := config.EngineTemplate(nw, pkgDefault)
+		if err != nil {
+			log.Printf("reload skipped, engine template: %v", err)
+			return
+		}
+		nopts := configgen.Options{TemplateJSON: ntpl, TopicPrefix: topicPrefix, MQTTHost: mqttHost, MQTTPort: mqttPort}
+		specs, err := buildSpecs(nw, nopts, engineBin, extDir, cfgPath, engineEnv)
 		if err != nil {
 			log.Printf("reload skipped, build specs: %v", err)
 			return
@@ -149,7 +161,7 @@ func previewPort(index int) int {
 // and its MJPEG preview server. The engine's Fingerprint is a hash of its
 // rendered config, and the preview server's is a hash of its arguments, so
 // the supervisor restarts only the process whose effective config changed.
-func buildSpecs(w config.Watcher, opts configgen.Options, engineBin, extDir string, engineEnv []string) ([]supervisor.Spec, error) {
+func buildSpecs(w config.Watcher, opts configgen.Options, engineBin, extDir, cfgPath string, engineEnv []string) ([]supervisor.Spec, error) {
 	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
 		return nil, err
 	}
@@ -192,12 +204,69 @@ func buildSpecs(w config.Watcher, opts configgen.Options, engineBin, extDir stri
 			Fingerprint: hex.EncodeToString(previewSum[:]),
 		})
 	}
+
+	if spec, ok := mediamtxSpec(w, extDir); ok {
+		specs = append(specs, spec)
+	}
+
+	// Always-on on-player zone dashboard (config-server) on :20300. It serves the
+	// zone-drawing page and edits the SAME config.json the watcher discovered, so a
+	// Save hot-reloads through configwatch -- no restart. Its fingerprint is only
+	// the bin+config path, so reconciling streams never needlessly restarts it.
+	cfgSum := sha256.Sum256([]byte("config-server|" + cfgPath))
+	specs = append(specs, supervisor.Spec{
+		ID:          "config-server",
+		Bin:         filepath.Join(extDir, "config-server"),
+		Args:        []string{"--port", "20300", "--config", cfgPath},
+		Fingerprint: hex.EncodeToString(cfgSum[:]),
+	})
 	return specs, nil
+}
+
+// mediamtxSpec returns a supervised MediaMTX process spec when config.json
+// opts in (mediamtx.enabled). It resolves the mediamtx.yml (SD override or the
+// packaged default) and fingerprints its contents, so a config edit restarts
+// only MediaMTX on the next reconcile. A misconfiguration (enabled but no yml)
+// is logged and skipped rather than failing the whole reconcile, so a bad
+// MediaMTX setup never takes the engines down.
+func mediamtxSpec(w config.Watcher, extDir string) (supervisor.Spec, bool) {
+	if !w.Mediamtx.Enabled {
+		return supervisor.Spec{}, false
+	}
+	pkgDefault := filepath.Join(extDir, "mediamtx.yml")
+	ymlPath, err := config.ResolveMediamtxConfig(w.Mediamtx.Config, pkgDefault)
+	if err != nil {
+		log.Printf("mediamtx enabled but config not found: %v (skipping mediamtx)", err)
+		return supervisor.Spec{}, false
+	}
+	ymlData, err := os.ReadFile(ymlPath)
+	if err != nil {
+		log.Printf("mediamtx enabled but cannot read %s: %v (skipping mediamtx)", ymlPath, err)
+		return supervisor.Spec{}, false
+	}
+	sum := sha256.Sum256(append([]byte(ymlPath+"\x00"), ymlData...))
+	return supervisor.Spec{
+		ID:   mediamtxID,
+		Bin:  filepath.Join(extDir, mediamtxBinary),
+		Args: []string{ymlPath},
+		// MediaMTX needs no engine env; give it a PATH so a runOnInit in the
+		// yml can find bundled client tools (e.g. mosquitto utilities in bin/).
+		Env:         []string{"PATH=" + extDir + "/bin:/usr/bin:/bin"},
+		Fingerprint: hex.EncodeToString(sum[:]),
+	}, true
 }
 
 func startBroker(extDir string) (*exec.Cmd, error) {
 	confPath := "/tmp/argus-watcher-mosquitto.conf"
-	conf := "listener 1883 0.0.0.0\nallow_anonymous true\npersistence false\nlog_dest stdout\n"
+	// Two listeners: plain MQTT on 1883 (engines publish here) and MQTT over
+	// WebSockets on 9001 so browser JS (the on-player presentation) can subscribe
+	// -- raw TCP MQTT is unreachable from a browser. allow_anonymous applies to both.
+	conf := "allow_anonymous true\n" +
+		"persistence false\n" +
+		"log_dest stdout\n" +
+		"listener 1883 0.0.0.0\n" +
+		"listener 9001 0.0.0.0\n" +
+		"protocol websockets\n"
 	if err := os.WriteFile(confPath, []byte(conf), 0o644); err != nil {
 		return nil, err
 	}

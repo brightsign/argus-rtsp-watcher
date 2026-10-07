@@ -51,8 +51,21 @@ func Render(s config.Stream, o Options) ([]byte, error) {
 	m["output_dir"] = FramesDir(o, s.ID)
 
 	if s.Zone != nil {
+		mode := s.ZoneMode
+		if mode == "" {
+			mode = config.ZoneModeAny
+		}
+		color := s.ZoneColor
+		if color == "" {
+			color = config.DefaultZoneColor
+		}
+		thickness := s.ZoneThickness
+		if thickness == 0 {
+			thickness = config.DefaultZoneThickness
+		}
 		m["zone"] = map[string]any{
 			"x0": s.Zone[0], "y0": s.Zone[1], "x1": s.Zone[2], "y1": s.Zone[3],
+			"mode": mode, "color": color, "thickness": thickness,
 		}
 	}
 

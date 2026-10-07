@@ -2,19 +2,24 @@ package configgen
 
 import (
 	"encoding/json"
-	"os"
 	"testing"
 
 	"argus-rtsp-watcher/internal/config"
 )
 
+// loadTemplate returns the engine template (the "engine" block of the combined
+// config.json), which is what configgen renders per stream.
 func loadTemplate(t *testing.T) []byte {
 	t.Helper()
-	data, err := os.ReadFile("../../configs/config.json")
+	w, err := config.Load("../../configs/config.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return data
+	tpl, err := config.EngineTemplate(w, "../../configs/config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tpl
 }
 
 func TestTopic(t *testing.T) {
@@ -114,6 +119,75 @@ func TestRenderZonePresent(t *testing.T) {
 		if got, _ := z[k].(float64); got != want {
 			t.Errorf("zone.%s = %v, want %v", k, z[k], want)
 		}
+	}
+	if got, _ := z["mode"].(string); got != config.ZoneModeAny {
+		t.Errorf("zone.mode = %v, want %q (default)", z["mode"], config.ZoneModeAny)
+	}
+	if got, _ := z["color"].(string); got != config.DefaultZoneColor {
+		t.Errorf("zone.color = %v, want %q (default)", z["color"], config.DefaultZoneColor)
+	}
+	if got, _ := z["thickness"].(float64); int(got) != config.DefaultZoneThickness {
+		t.Errorf("zone.thickness = %v, want %d (default)", z["thickness"], config.DefaultZoneThickness)
+	}
+}
+
+func TestRenderZoneThickness(t *testing.T) {
+	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	out, err := Render(config.Stream{ID: "cam1", RTSPURL: "rtsp://h/live", TargetFPS: 10,
+		Zone: []float64{0.1, 0.1, 0.9, 0.9}, ZoneThickness: 6}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	z, ok := m["zone"].(map[string]any)
+	if !ok {
+		t.Fatalf("zone missing or not an object: %v", m["zone"])
+	}
+	if got, _ := z["thickness"].(float64); int(got) != 6 {
+		t.Errorf("zone.thickness = %v, want 6", z["thickness"])
+	}
+}
+
+func TestRenderZoneColor(t *testing.T) {
+	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	out, err := Render(config.Stream{ID: "cam1", RTSPURL: "rtsp://h/live", TargetFPS: 10,
+		Zone: []float64{0.1, 0.1, 0.9, 0.9}, ZoneColor: "#ff8800"}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	z, ok := m["zone"].(map[string]any)
+	if !ok {
+		t.Fatalf("zone missing or not an object: %v", m["zone"])
+	}
+	if got, _ := z["color"].(string); got != "#ff8800" {
+		t.Errorf("zone.color = %v, want %q", z["color"], "#ff8800")
+	}
+}
+
+func TestRenderZoneModeBase(t *testing.T) {
+	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	out, err := Render(config.Stream{ID: "cam1", RTSPURL: "rtsp://h/live", TargetFPS: 10,
+		Zone: []float64{0.1, 0.1, 0.9, 0.9}, ZoneMode: config.ZoneModeBase}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	z, ok := m["zone"].(map[string]any)
+	if !ok {
+		t.Fatalf("zone missing or not an object: %v", m["zone"])
+	}
+	if got, _ := z["mode"].(string); got != config.ZoneModeBase {
+		t.Errorf("zone.mode = %v, want %q", z["mode"], config.ZoneModeBase)
 	}
 }
 

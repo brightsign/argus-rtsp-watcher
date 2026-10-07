@@ -44,6 +44,14 @@ public:
 private:
   void tick_publish() noexcept;
   std::string make_payload_locked() const;
+
+  // Low-latency in-zone event: separate from the periodic analytics tick, this
+  // fires the instant ZONE_EVENT_MIN_HITS frames with an in-zone detection land
+  // within a ZONE_EVENT_WINDOW_MS lookback, so a flash does not wait for the
+  // 1 Hz publish. Called per frame under m_; returns true (with the in-zone
+  // count) when an event should be published, rate-limited to ZONE_EVENT_REPEAT_MS.
+  bool detect_zone_event_locked(int64_t now_ms, int& in_zone_count) noexcept;
+  void publish_zone_event(int in_zone_count, int64_t now_ms) noexcept;
   
   // Phase 2: Connection management
   bool reconnect_if_needed() noexcept;
@@ -64,7 +72,12 @@ private:
   uint64_t frame_seq_{0};           // Video<->MQTT sync key (see PipelineResult.seq)
   int64_t  capture_wall_ns_{0};     // Wall-clock at capture, ns (-> frame_ts, ms)
   std::vector<TrackedBox> tracks_;  // Person tracks with stable IDs
-  
+
+  // In-zone event detector state (see detect_zone_event_locked). The rolling
+  // window defaults (1s lookback, 2 hits, 500ms repeat) live in zone::EventWindow.
+  zone::EventWindow zone_window_;
+  std::string zone_event_topic_;      // sibling of cfg_.topic (".../zone_event")
+
   // V7.0: Enhanced telemetry
   float    detector_fps_{0.0f};
   float    tracker_fps_{0.0f};

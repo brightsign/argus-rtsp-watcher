@@ -80,10 +80,14 @@ func TestSingleStreamSmokeEndToEnd(t *testing.T) {
 			engineBin, runtime.GOARCH)
 	}
 
-	templatePath := filepath.Join(repoRoot, "configs", "config.json")
-	template, err := os.ReadFile(templatePath)
+	baseConfig := filepath.Join(repoRoot, "configs", "config.json")
+	baseW, err := config.Load(baseConfig)
 	if err != nil {
-		t.Fatalf("read engine template %s: %v", templatePath, err)
+		t.Fatalf("load %s: %v", baseConfig, err)
+	}
+	template, err := config.EngineTemplate(baseW, baseConfig)
+	if err != nil {
+		t.Fatalf("engine template from %s: %v", baseConfig, err)
 	}
 
 	workDir := t.TempDir()

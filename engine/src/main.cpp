@@ -315,6 +315,9 @@ int main(int argc, char** argv) {
 
     // Configure custom detection zone (emitted as an additive per-track in_zone).
     pc.zone.enabled = appcfg.zone.enabled;
+    pc.zone.mode = (appcfg.zone.mode == "base") ? zone::Mode::Base : zone::Mode::Any;
+    zone::parse_hex_color(appcfg.zone.color, pc.zone.r, pc.zone.g, pc.zone.b);
+    pc.zone.thickness = appcfg.zone.thickness;
     pc.zone.x0 = appcfg.zone.x0;
     pc.zone.y0 = appcfg.zone.y0;
     pc.zone.x1 = appcfg.zone.x1;

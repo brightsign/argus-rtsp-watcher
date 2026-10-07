@@ -50,8 +50,12 @@ struct AppConfig {
   bool enable_frame_stamp{true};    // Burn frame_seq/frame_ts stamp into decorated frames (video<->MQTT sync)
 
   // Custom detection zone (optional; normalized 0..1 fractions of frame size).
-  // Populated only when the config contains a "zone" object.
-  struct Zone { bool enabled{false}; float x0{0}, y0{0}, x1{0}, y1{0}; };
+  // Populated only when the config contains a "zone" object. mode selects the
+  // membership test for in_zone: "any" (any part of the box overlaps the zone,
+  // the default) or "base" (the box's feet/bottom-center must be inside). color
+  // is the "#RRGGBB" outline color drawn on the annotated frame (default white).
+  // thickness is the outline width in pixels (default 3).
+  struct Zone { bool enabled{false}; std::string mode{"any"}; std::string color{"#ffffff"}; int thickness{3}; float x0{0}, y0{0}, x1{0}, y1{0}; };
   Zone zone;
 
   // Face blur options (for privacy in output frames)

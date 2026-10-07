@@ -43,7 +43,7 @@ message for that frame (MQTT publishes ~1/s, so most frames have none).
 
 Draw the "important area" on a frame and get its coordinates. Click-drag a
 rectangle and copy either the normalized `"zone": [..]` (paste into
-`watcher.json`) or the pixel `x0,y0,x1,y1` (for `boxstats --region`).
+`config.json`) or the pixel `x0,y0,x1,y1` (for `boxstats --region`).
 
 ### Against the live camera (easiest)
 
@@ -56,7 +56,7 @@ draw straight on the live view:
 ```
 
 `--port` is the stream's preview port (`20200 +` its 0-based index in
-`watcher.json`). It serves the page over `http://localhost:8781` and opens your
+`config.json`). It serves the page over `http://localhost:8781` and opens your
 browser. Needs `python3` and `curl`. Ctrl-C stops it.
 
 ### By hand / against a recorded frame
@@ -67,7 +67,7 @@ tick **Live (refresh)** to keep it updating. The picker reads only image
 dimensions, so a cross-origin snapshot loads without any CORS setup.
 
 Whichever way you draw it, the `zone` only takes effect once the zone-aware
-extension is deployed and you add the line to that stream in `watcher.json`.
+extension is deployed and you add the line to that stream in `config.json`.
 
 ## boxstats
 
@@ -92,7 +92,7 @@ p95 / max (with each as a % of the frame), plus width and height ranges.
 
 ## Note on stream ids
 
-The MQTT topic id is the Argus stream `id` from `watcher.json`, which may differ
+The MQTT topic id is the Argus stream `id` from `config.json`, which may differ
 from the camera's own on-screen name. List the live topics with:
 
 ```sh

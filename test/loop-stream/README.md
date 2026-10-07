@@ -30,7 +30,7 @@ ffprobe -rtsp_transport tcp rtsp://192.0.2.10:8554/test   # verify (H.264 1280x7
 
 # 2. Point the player at the test config (watcher hot-reloads it; no reboot)
 sshpass -p none scp -o PreferredAuthentications=password -o PubkeyAuthentication=no \
-    watcher-test.json brightsign@xt5i:/storage/sd/watcher.json
+    watcher-test.json brightsign@xt5i:/storage/sd/config.json
 
 # 3. Confirm all 8 channels publish
 mosquitto_sub -h 192.0.2.20 -t 'bs/argus/#' -C 16 -v
@@ -47,5 +47,5 @@ mosquitto_sub -h 192.0.2.20 -t 'bs/argus/#' -C 16 -v
   which is independent of how many snapshots a channel got; sample longer to
   tighten the spread.
 - Stop the stream: `podman stop argus-loop-stream`.
-- Restore the player's normal config afterward (copy your real watcher.json back
-  to `/storage/sd/watcher.json`).
+- Restore the player's normal config afterward (copy your real config.json back
+  to `/storage/sd/config.json`).

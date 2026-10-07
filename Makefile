@@ -6,8 +6,10 @@ ENGINE_BIN := $(ENGINE_BUILD_DIR)/argus-engine
 ENGINE_TEST_BUILD_DIR := build/host-tests
 ENGINE_TEST_BIN := $(ENGINE_TEST_BUILD_DIR)/tests/run_engine_tests
 IMAGE_SERVER_BIN := build/image-stream-server
+CONFIG_SERVER_BIN := build/config-server
 MOSQUITTO_DIR := build/mosquitto
 LIBS_DIR := build/libs
+MEDIAMTX_DIR := build/mediamtx
 # Optional: path to the BrightSign cobra toolchain installer. If empty, fetch-sdk
 # searches the shared cache dir / repo root / CWD for
 # brightsign-x86_64-cobra-toolchain-*.sh.
@@ -68,8 +70,14 @@ fetch-sdk:           ## Install the aarch64 cross-compile SDK into the shared ca
 build-watcher:       ## Cross-compile the Go watcher for arm64
 	GOOS=linux GOARCH=arm64 $(GO) build -o $(WATCHER_BIN) ./cmd/watcher
 
+build-config-server: ## Cross-compile the on-player zone dashboard (config-server, :20300) for arm64
+	GOOS=linux GOARCH=arm64 $(GO) build -o $(CONFIG_SERVER_BIN) ./cmd/config-server
+
 build-image-server:  ## Build the image-stream-server (MJPEG preview) from its upstream repo (needs git + go + network)
 	bash scripts/build-image-server.sh $(CURDIR)/$(IMAGE_SERVER_BIN)
+
+build-mediamtx:      ## Fetch the MediaMTX aarch64 binary (optional on-player RTSPS proxy; pin MEDIAMTX_VERSION)
+	bash scripts/build-mediamtx.sh $(CURDIR)/$(MEDIAMTX_DIR)
 
 build-mosquitto: fetch-sdk ## Cross-compile the mosquitto broker + harvest client tools from the SDK sysroot
 	bash scripts/build-mosquitto.sh $(CURDIR)/$(MOSQUITTO_DIR)
@@ -96,10 +104,10 @@ build-engine-tests: prep ## Build the C++ engine unit tests for the host (native
 run-engine-tests: build-engine-tests ## Build and run the C++ engine unit tests
 	$(ENGINE_TEST_BIN)
 
-package: build-watcher build-engine build-image-server build-mosquitto build-libs build-models ## Assemble staging/<SOC> for rk3588/rk3576/rk3568 and produce the dev + LVM extension zips
+package: build-watcher build-engine build-image-server build-config-server build-mosquitto build-libs build-models build-mediamtx ## Assemble staging/<SOC> for rk3588/rk3576/rk3568 and produce the dev + LVM extension zips
 	SOC_LIST="$(SOC_LIST)" STAGING_DIR="$(STAGING_DIR)" \
 		WATCHER_BIN="$(CURDIR)/$(WATCHER_BIN)" ENGINE_BIN="$(CURDIR)/$(ENGINE_BIN)" \
-		IMAGE_SERVER_BIN="$(CURDIR)/$(IMAGE_SERVER_BIN)" \
+		IMAGE_SERVER_BIN="$(CURDIR)/$(IMAGE_SERVER_BIN)" CONFIG_SERVER_BIN="$(CURDIR)/$(CONFIG_SERVER_BIN)" MEDIAMTX_DIR="$(CURDIR)/$(MEDIAMTX_DIR)" \
 		MOSQUITTO_DIR="$(CURDIR)/$(MOSQUITTO_DIR)" LIBS_DIR="$(CURDIR)/$(LIBS_DIR)" MODELS_DIR="$(MODELS_DIR)" \
 		EXT_NAME="$(EXT_NAME)" DEV_ZIP="$(DEV_ZIP)" EXT_ZIP="$(EXT_ZIP)" \
 		INSTALL_HELPER="$(INSTALL_HELPER)" PLAYER_DEST="$(PLAYER_DEST)" \
@@ -151,4 +159,4 @@ cache-clean:         ## Remove the ENTIRE shared build cache (SDK + toolkit + mo
 	rm -rf "$(CACHE_DIR)"
 	@echo "Shared cache removed. The rknn_tk2 Docker image is left intact; remove it with: docker rmi rknn_tk2"
 
-.PHONY: help build prep copy cache-info cache-clean fetch-sdk build-watcher build-image-server build-mosquitto build-libs build-models build-engine build-engine-tests run-engine-tests package test run-tests run-integration-tests clean
+.PHONY: help build prep copy cache-info cache-clean fetch-sdk build-watcher build-image-server build-config-server build-mediamtx build-mosquitto build-libs build-models build-engine build-engine-tests run-engine-tests package test run-tests run-integration-tests clean

@@ -16,10 +16,10 @@ automatable in CI.
 
 - Build and package: `make build` (produces `staging/<SOC>/` and the
   `argus-rtsp-watcher-ext-*.zip` for the target you're validating).
-- Make sure no stray `watcher.json` is sitting at any of the higher-priority
-  discovery paths on the device (`/storage/sd/watcher.json`,
-  `/storage/sd/configs/watcher.json`, `/storage/ssd/watcher.json`,
-  `/storage/ssd/configs/watcher.json`) — config discovery is first-found-wins
+- Make sure no stray `config.json` is sitting at any of the higher-priority
+  discovery paths on the device (`/storage/sd/config.json`,
+  `/storage/sd/configs/config.json`, `/storage/ssd/config.json`,
+  `/storage/ssd/configs/config.json`) — config discovery is first-found-wins
   with no CLI/env override (see `docs/DESIGN.md` §5.3), so a leftover file
   from a previous validation pass silently wins over the one you think you're
   editing.
@@ -36,12 +36,11 @@ automatable in CI.
    (`argus-rtsp-watcher-ext-*.zip`) — see the `brightsign-native-extensions`
    and `brightsign-player-ssh` skills for the insecure/install/SSH mechanics
    specific to this BrightSign OS version.
-2. Write `watcher.json` to `/storage/sd/watcher.json` (or
-   `/storage/sd/configs/watcher.json`) with the tier's stream count (3 for
+2. Write `config.json` to `/storage/sd/configs/config.json` (or `/storage/sd/config.json`) with the tier's stream count (3 for
    XT5, 2-3 for XS6/XD6, 1 for RK3568), each entry pointing at a real
-   `rtsp_url` — see `examples/watcher.example.json` for the shape.
+   `rtsp_url` — see `examples/config.example.json` for the shape.
 3. Start (or restart) the extension and confirm in the log that it found
-   your config: `using config /storage/sd/watcher.json` (not the packaged
+   your config: `using config /storage/sd/config.json` (not the packaged
    default).
 
 ## 2. Per-stream throughput
@@ -125,7 +124,7 @@ so it should just work once the extension is running.
 - One `image-stream-server` process per stream (staged at
   `<SOC>/image-stream-server`, launched by the watcher alongside the engine)
   serves that file as MJPEG on its own port: `20200 + <stream's 0-based
-  index in watcher.json>`.
+  index in config.json>`.
 - [ ] Confirm each configured stream is viewable at
       `http://<player-ip>:<port>` and shows the live person/gaze overlay
       boxes updating.
@@ -133,7 +132,7 @@ so it should just work once the extension is running.
       `20200..20200+N-1` range for an N-stream config (no separate opt-in —
       these ports come up whenever the corresponding stream does).
 
-Example, for the sample 3-stream `watcher.json` below:
+Example, for the sample 3-stream `config.json` below:
 
 ```json
 {
