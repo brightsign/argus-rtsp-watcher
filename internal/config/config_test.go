@@ -300,6 +300,9 @@ func TestLoadDefaultsZoneMode(t *testing.T) {
 	if w.Streams[0].ZoneThickness != DefaultZoneThickness {
 		t.Errorf("ZoneThickness = %d, want %d", w.Streams[0].ZoneThickness, DefaultZoneThickness)
 	}
+	if w.Streams[0].ZoneBorderThickness != DefaultZoneBorderThickness {
+		t.Errorf("ZoneBorderThickness = %d, want %d", w.Streams[0].ZoneBorderThickness, DefaultZoneBorderThickness)
+	}
 }
 
 func containsAll(s string, subs ...string) bool {

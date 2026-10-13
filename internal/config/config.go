@@ -34,6 +34,21 @@ const (
 	MaxZoneThickness     = 10
 )
 
+// Red in-zone alert-border width (px), independent of the zone outline width.
+// DefaultZoneBorderThickness is used when a stream omits zone_border_thickness;
+// MaxZoneBorderThickness caps it (the border can be much bolder than the outline).
+const (
+	DefaultZoneBorderThickness = 20
+	MaxZoneBorderThickness     = 100
+)
+
+// Rolling window (minutes) for the on-frame zone-detect counter. Used when a
+// stream omits zone_window_minutes; MaxZoneWindowMinutes caps it at 24 hours.
+const (
+	DefaultZoneWindowMinutes = 15
+	MaxZoneWindowMinutes     = 1440
+)
+
 // zoneColorPattern validates zone_color as a "#RRGGBB" hex triplet.
 var zoneColorPattern = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
 
@@ -44,19 +59,21 @@ var streamIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // RTSPURL, FilePath (file-driven tests), or USB (the auto-detected local USB
 // camera).
 type Stream struct {
-	ID            string    `json:"id"`
-	RTSPURL       string    `json:"rtsp_url"`
-	FilePath      string    `json:"file_path"`
-	USB           bool      `json:"usb"`            // use the auto-detected local USB camera
-	USBWidth      int       `json:"usb_width"`      // optional USB capture width  (0 = engine default)
-	USBHeight     int       `json:"usb_height"`     // optional USB capture height (0 = engine default)
-	USBFPS        int       `json:"usb_fps"`        // optional USB capture fps    (0 = engine default)
-	TargetFPS     int       `json:"target_fps"`
-	Confidence    *float64  `json:"confidence"`     // optional person-detection threshold 0..1 (nil = engine default 0.5)
-	Zone          []float64 `json:"zone"`           // optional [x0,y0,x1,y1], normalized 0..1
-	ZoneMode      string    `json:"zone_mode"`      // zone membership test: "any" (default) or "base"
-	ZoneColor     string    `json:"zone_color"`     // zone outline color "#RRGGBB" (default DefaultZoneColor)
-	ZoneThickness int       `json:"zone_thickness"` // zone outline width in px, 1..MaxZoneThickness (default 1)
+	ID                  string    `json:"id"`
+	RTSPURL             string    `json:"rtsp_url"`
+	FilePath            string    `json:"file_path"`
+	USB                 bool      `json:"usb"`        // use the auto-detected local USB camera
+	USBWidth            int       `json:"usb_width"`  // optional USB capture width  (0 = engine default)
+	USBHeight           int       `json:"usb_height"` // optional USB capture height (0 = engine default)
+	USBFPS              int       `json:"usb_fps"`    // optional USB capture fps    (0 = engine default)
+	TargetFPS           int       `json:"target_fps"`
+	Confidence          *float64  `json:"confidence"`            // optional person-detection threshold 0..1 (nil = engine default 0.5)
+	Zone                []float64 `json:"zone"`                  // optional [x0,y0,x1,y1], normalized 0..1
+	ZoneMode            string    `json:"zone_mode"`             // zone membership test: "any" (default) or "base"
+	ZoneColor           string    `json:"zone_color"`            // zone outline color "#RRGGBB" (default DefaultZoneColor)
+	ZoneThickness       int       `json:"zone_thickness"`        // zone outline width in px, 1..MaxZoneThickness (default 3)
+	ZoneBorderThickness int       `json:"zone_border_thickness"` // red alert-border width in px, 1..MaxZoneBorderThickness (default 20)
+	ZoneWindowMin       int       `json:"zone_window_minutes"`   // rolling window (min) for the on-frame detect counter (default 15)
 }
 
 // Mediamtx optionally runs a bundled MediaMTX instance alongside the engines,
@@ -179,6 +196,12 @@ func Load(path string) (Watcher, error) {
 		if w.Streams[i].ZoneThickness == 0 {
 			w.Streams[i].ZoneThickness = DefaultZoneThickness
 		}
+		if w.Streams[i].ZoneBorderThickness == 0 {
+			w.Streams[i].ZoneBorderThickness = DefaultZoneBorderThickness
+		}
+		if w.Streams[i].ZoneWindowMin == 0 {
+			w.Streams[i].ZoneWindowMin = DefaultZoneWindowMinutes
+		}
 	}
 	if err := w.Validate(); err != nil {
 		return Watcher{}, err
@@ -251,6 +274,12 @@ func (w Watcher) Validate() error {
 		}
 		if s.ZoneThickness != 0 && (s.ZoneThickness < 1 || s.ZoneThickness > MaxZoneThickness) {
 			return fmt.Errorf("stream %q zone_thickness = %d is out of range [1,%d]", s.ID, s.ZoneThickness, MaxZoneThickness)
+		}
+		if s.ZoneBorderThickness != 0 && (s.ZoneBorderThickness < 1 || s.ZoneBorderThickness > MaxZoneBorderThickness) {
+			return fmt.Errorf("stream %q zone_border_thickness = %d is out of range [1,%d]", s.ID, s.ZoneBorderThickness, MaxZoneBorderThickness)
+		}
+		if s.ZoneWindowMin != 0 && (s.ZoneWindowMin < 1 || s.ZoneWindowMin > MaxZoneWindowMinutes) {
+			return fmt.Errorf("stream %q zone_window_minutes = %d is out of range [1,%d]", s.ID, s.ZoneWindowMin, MaxZoneWindowMinutes)
 		}
 	}
 	return nil

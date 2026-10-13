@@ -5,6 +5,10 @@
 bin/
 .llm/
 
+# Box-specific shared-cache location (points the build at the external SDK via
+# BS_CACHE_DIR; see cache.env.example)
+cache.env
+
 # Go best practice
 vendor/
 

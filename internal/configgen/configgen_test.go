@@ -129,6 +129,9 @@ func TestRenderZonePresent(t *testing.T) {
 	if got, _ := z["thickness"].(float64); int(got) != config.DefaultZoneThickness {
 		t.Errorf("zone.thickness = %v, want %d (default)", z["thickness"], config.DefaultZoneThickness)
 	}
+	if got, _ := z["border_thickness"].(float64); int(got) != config.DefaultZoneBorderThickness {
+		t.Errorf("zone.border_thickness = %v, want %d (default)", z["border_thickness"], config.DefaultZoneBorderThickness)
+	}
 }
 
 func TestRenderZoneThickness(t *testing.T) {

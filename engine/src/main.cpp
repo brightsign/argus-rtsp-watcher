@@ -318,6 +318,8 @@ int main(int argc, char** argv) {
     pc.zone.mode = (appcfg.zone.mode == "base") ? zone::Mode::Base : zone::Mode::Any;
     zone::parse_hex_color(appcfg.zone.color, pc.zone.r, pc.zone.g, pc.zone.b);
     pc.zone.thickness = appcfg.zone.thickness;
+    pc.zone.border_thickness = appcfg.zone.border_thickness;
+    pc.zone.window_minutes = appcfg.zone.window_minutes;
     pc.zone.x0 = appcfg.zone.x0;
     pc.zone.y0 = appcfg.zone.y0;
     pc.zone.x1 = appcfg.zone.x1;

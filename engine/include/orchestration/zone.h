@@ -27,6 +27,10 @@ struct ZoneCfg {
   int r{255}, g{255}, b{255};
   // Outline width in pixels (default 3).
   int thickness{3};
+  // Red alert-border width in pixels (default 20), independent of the outline.
+  int border_thickness{20};
+  // Rolling window (minutes) for the on-frame zone-detect counter (default 15).
+  int window_minutes{15};
 };
 
 // Parse "#RRGGBB" (leading '#' optional) into r,g,b (0..255). Returns true and
@@ -115,6 +119,57 @@ struct EventWindow {
 
   // reset clears the window (e.g. when the zone is disabled).
   void reset() { hits.clear(); }
+};
+
+// DetectCounter tallies discrete zone-detect episodes over a rolling window. A
+// detect is counted once when presence is first confirmed (EventWindow: two
+// in-zone frames within 1s); continuous presence stays a single detect until the
+// zone goes quiet for episode_gap_ms, after which a fresh entry counts again.
+// count() returns how many detects fall within the last window_ms. Pure/stateful
+// (caller supplies a monotonic now_ms), so it is host unit-testable.
+struct DetectCounter {
+  EventWindow confirm;               // presence confirmation (2 hits within 1s)
+  int64_t episode_gap_ms{2000};      // quiet gap that ends an episode
+  int64_t window_ms{15 * 60 * 1000}; // rolling count window (default 15 min)
+  int64_t trigger_hold_ms{2000};     // alert-border hold: keep it solid across dropped detection frames
+
+  bool active{false};
+  int64_t last_in_zone_ms{-1};
+  std::deque<int64_t> detects;       // timestamps of counted detects
+
+  // record folds one frame in and returns the current rolling count. in_zone
+  // marks whether any box was in the zone this frame.
+  int record(bool in_zone, int64_t now_ms) {
+    if (in_zone) last_in_zone_ms = now_ms;
+    if (active && last_in_zone_ms >= 0 && now_ms - last_in_zone_ms > episode_gap_ms) {
+      active = false;  // episode ended after a quiet gap
+    }
+    if (confirm.record(in_zone, now_ms) && !active) {
+      active = true;
+      detects.push_back(now_ms);
+    }
+    prune(now_ms);
+    return static_cast<int>(detects.size());
+  }
+
+  // count prunes expired detects and returns the rolling total without recording.
+  int count(int64_t now_ms) {
+    prune(now_ms);
+    return static_cast<int>(detects.size());
+  }
+
+  // triggered reports whether the zone is currently firing: true from the first
+  // in-zone frame, held trigger_hold_ms past the last in-zone frame to bridge
+  // dropped detections, and clears once the zone has been empty that long. Drives
+  // the red alert border. Call after record() so last_in_zone_ms is current.
+  bool triggered(int64_t now_ms) const {
+    return last_in_zone_ms >= 0 && now_ms - last_in_zone_ms <= trigger_hold_ms;
+  }
+
+private:
+  void prune(int64_t now_ms) {
+    while (!detects.empty() && now_ms - detects.front() > window_ms) detects.pop_front();
+  }
 };
 
 } // namespace zone

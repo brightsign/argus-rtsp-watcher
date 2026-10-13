@@ -154,6 +154,14 @@ bool load_from_file(const std::string& path, AppConfig& out, bool /*strict*/, ch
         if (z.contains("thickness") && z["thickness"].is_number_integer()) {
           out.zone.thickness = z["thickness"].get<int>();
         }
+        // Optional red alert-border width (px), independent of the outline.
+        if (z.contains("border_thickness") && z["border_thickness"].is_number_integer()) {
+          out.zone.border_thickness = z["border_thickness"].get<int>();
+        }
+        // Optional rolling-window minutes for the on-frame detect counter.
+        if (z.contains("window_minutes") && z["window_minutes"].is_number_integer()) {
+          out.zone.window_minutes = z["window_minutes"].get<int>();
+        }
       }
     }
 

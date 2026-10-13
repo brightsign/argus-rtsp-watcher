@@ -2,10 +2,15 @@
 set -euo pipefail
 
 # Ensures the custom BrightSign 9.1 aarch64 cross-compile SDK is available in the
-# shared build cache (CACHE_DIR/sdk -- see scripts/lib/cache.sh). The SDK is
-# provisioned once per build box by the `brightsign-sdk-builder` repo, which
-# installs it straight into the cache; this script simply detects it there. As a
-# convenience it will also install from a toolchain installer you have on hand.
+# shared build cache (CACHE_DIR/sdk -- see scripts/lib/cache.sh). Resolution order
+# when the SDK is not already present in the cache:
+#   1. install from a brightsign-x86_64-cobra-toolchain-*.sh installer on hand
+#      (arg $1 / SDK_INSTALLER, else the cache dir, repo root, or CWD); else
+#   2. build it automatically via the sibling brightsign-sdk-builder provisioner,
+#      which installs straight into THIS cache (needs Docker, ~25GB, hours). Opt
+#      out with AUTO_BUILD_SDK=0 to get manual instructions instead.
+# Because fetch-sdk is a prerequisite of the engine/mosquitto/libs builds, an
+# empty-but-configured cache provisions itself on the first `make build`.
 #
 # "Self-contained path" matters: OE SDK installers bake absolute paths
 # (SDKTARGETSYSROOT, PATH, CC/CXX --sysroot=..., and the ELF INTERP/RPATH of the
@@ -63,48 +68,72 @@ if [ -z "${INSTALLER}" ]; then
     INSTALLER="$(ls ./${INSTALLER_GLOB} 2>/dev/null | head -n1 || true)"
 fi
 
-if [ -z "${INSTALLER}" ] || [ ! -f "${INSTALLER}" ]; then
-    cat <<EOF
-No cross-compile SDK found in the shared cache, and no toolchain installer on hand.
+if [ -n "${INSTALLER}" ] && [ -f "${INSTALLER}" ]; then
+    echo "Installing SDK from ${INSTALLER} into ${SDK_DIR} (self-relocating)..."
+    chmod +x "${INSTALLER}"
+    # -y: non-interactive. -d: install (and relocate all baked absolute paths,
+    # including the cross-toolchain binaries' ELF INTERP/RPATH) into SDK_DIR.
+    "${INSTALLER}" -y -d "${SDK_DIR}"
+elif [ "${AUTO_BUILD_SDK:-1}" != "1" ]; then
+    # No installer, and the automatic build is disabled: fall back to guidance.
+    cat >&2 <<EOF
+No cross-compile SDK found in the shared cache, and no toolchain installer on hand
+(automatic SDK build disabled: AUTO_BUILD_SDK=${AUTO_BUILD_SDK:-}).
 
-The SDK is provisioned ONCE PER BUILD BOX by the brightsign-sdk-builder repo,
-which downloads the BrightSign OS source, builds the custom SDK, and installs it
-into a shared cache that sits OUTSIDE any single repo. Clone and build it once:
+Provision it once with the brightsign-sdk-builder repo, which downloads the
+BrightSign OS source, builds the custom SDK, and installs it into this shared
+cache (${SDK_DIR}):
 
     git clone https://github.com/brightsign/brightsign-sdk-builder.git
     cd brightsign-sdk-builder && make build
 
-That populates ${SDK_DIR}. After that first (~multi-hour) run, this and our other
-example extensions all cross-compile against the same cached SDK/toolkit/models --
-no per-repo SDK rebuild. Then re-run this build.
-
-Alternatively, if you already have a brightsign-x86_64-cobra-toolchain-*.sh
-installer, install from it directly:
-    - pass its path:  make fetch-sdk SDK_INSTALLER=/path/to/installer.sh
-    - or drop it in the shared cache dir (see 'make cache-info') or the repo root.
-
-Do NOT symlink or copy in an already-extracted sdk/ directory relocated for a
-different path -- its baked paths will fail. Always install with -d pointed at the
-shared cache path so OE relocation bakes the right path in.
+Or, if you already have a brightsign-x86_64-cobra-toolchain-*.sh installer:
+    make fetch-sdk SDK_INSTALLER=/path/to/installer.sh
+    (or drop it in the shared cache dir -- see 'make cache-info' -- or the repo root)
 EOF
     exit 1
+else
+    # No installer on hand: build the SDK automatically. We delegate to the
+    # brightsign-sdk-builder provisioner, which OWNS the multi-hour OpenEmbedded
+    # build (meta-bs recipes bake in the OpenCV/GStreamer/RGA libs this engine
+    # links) and installs straight into THIS cache -- so we never duplicate that
+    # logic here. Locate it by override, else the conventional sibling checkout,
+    # else clone it beside this repo.
+    BUILDER_DIR="${SDK_BUILDER_DIR:-$(cd "${REPO_ROOT}/.." && pwd)/brightsign-sdk-builder}"
+    if [ ! -f "${BUILDER_DIR}/Makefile" ]; then
+        echo "==> brightsign-sdk-builder not found at ${BUILDER_DIR}; cloning it"
+        git clone https://github.com/brightsign/brightsign-sdk-builder.git "${BUILDER_DIR}"
+    fi
+    [ -f "${BUILDER_DIR}/Makefile" ] || {
+        echo "ERROR: brightsign-sdk-builder is unavailable at ${BUILDER_DIR}" >&2
+        exit 1
+    }
+
+    cat <<EOF
+==> No SDK in the shared cache and no installer on hand.
+    Building it now via brightsign-sdk-builder:
+        ${BUILDER_DIR}
+    This is a one-time OpenEmbedded build: it needs Docker, ~25GB of disk, and
+    network, and TAKES HOURS. It installs straight into ${SDK_DIR} and is reused
+    by every project on this box. Set AUTO_BUILD_SDK=0 to skip and provision
+    manually instead.
+EOF
+    # The builder resolves its cache via ARGUS_CACHE_DIR; hand it THIS repo's
+    # already-resolved absolute cache path so both agree on one physical cache.
+    ARGUS_CACHE_DIR="${CACHE_DIR}" "${MAKE:-make}" -C "${BUILDER_DIR}" sdk
 fi
 
-echo "Installing SDK from ${INSTALLER} into ${SDK_DIR} (self-relocating)..."
-chmod +x "${INSTALLER}"
-# -y: non-interactive. -d: install (and relocate all baked absolute paths,
-# including the cross-toolchain binaries' ELF INTERP/RPATH) into SDK_DIR.
-"${INSTALLER}" -y -d "${SDK_DIR}"
-
 if ! sdk_is_self_consistent; then
-    echo "ERROR: SDK installed but environment-setup-aarch64-oe-linux does not" >&2
+    echo "ERROR: SDK provisioned but environment-setup-aarch64-oe-linux does not" >&2
     echo "reference ${SDK_DIR} -- relocation did not take effect as expected." >&2
     exit 1
 fi
 
 # The RKNN runtime library ships separately from the BrightSign SDK installer.
 # Pinned to the same RKNN version as `make prep` and model compilation so the
-# runtime, API headers, and compiled models stay compatible.
+# runtime, API headers, and compiled models stay compatible. The builder path
+# already installs this; the check below is a harmless idempotent safety net for
+# the installer path.
 RKNN_TAG="${RKNN_TAG:-v2.3.0}"
 RKNN_LIB="${SDK_DIR}/sysroots/aarch64-oe-linux/usr/lib/librknnrt.so"
 if [ ! -f "${RKNN_LIB}" ]; then

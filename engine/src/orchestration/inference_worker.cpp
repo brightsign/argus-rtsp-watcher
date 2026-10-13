@@ -154,6 +154,47 @@ void draw_frame_stamp(cv::Mat& canvas, uint64_t seq, int64_t wall_ns) {
     cv::putText(canvas, text, cv::Point(text_x, text_y), font, font_scale,
                 cv::Scalar(255, 255, 255), thickness, cv::LINE_AA);
 }
+
+// Draw the rolling zone-detect count in the upper-right corner, in the zone's
+// configured outline color and at the same size as the bottom-left frame stamp,
+// on a dark backing box for legibility over video.
+void draw_zone_count(cv::Mat& canvas, int count, const zone::ZoneCfg& zone) {
+    if (canvas.empty()) return;
+    const int H = canvas.rows;
+    auto scaled = [H](int base) { return std::max(base, (H * base + kStampScaleRefPx / 2) / kStampScaleRefPx); };
+    const int margin = scaled(kStampMarginPx);
+
+    char text[32];
+    std::snprintf(text, sizeof(text), "%d", count);
+
+    const int font = cv::FONT_HERSHEY_SIMPLEX;
+    const double font_scale = std::max(0.5, 0.5 * H / static_cast<double>(kStampScaleRefPx));
+    const int thickness = std::max(1, (H + kStampScaleRefPx / 2) / kStampScaleRefPx);
+    int baseline = 0;
+    const cv::Size text_size = cv::getTextSize(text, font, font_scale, thickness, &baseline);
+
+    const int pad = margin;
+    const int text_x = canvas.cols - text_size.width - margin;  // right-anchored
+    const int text_y = margin + text_size.height;               // top-anchored baseline
+    cv::rectangle(canvas,
+                  cv::Point(text_x - pad, text_y - text_size.height - pad),
+                  cv::Point(text_x + text_size.width + pad, text_y + baseline + pad),
+                  cv::Scalar(0, 0, 0), cv::FILLED);
+    cv::putText(canvas, text, cv::Point(text_x, text_y), font, font_scale,
+                cv::Scalar(zone.b, zone.g, zone.r), thickness, cv::LINE_AA);
+}
+
+// Draw a red alert border around the whole frame at the given pixel width, shown
+// while an in-zone detect is active. Inset by half the width so the full stroke
+// is visible (an OpenCV rectangle line is centered on its edge).
+void draw_alert_border(cv::Mat& canvas, int thickness) {
+    if (canvas.empty()) return;
+    const int t = std::max(1, thickness);
+    const int off = t / 2;
+    cv::rectangle(canvas, cv::Point(off, off),
+                  cv::Point(canvas.cols - 1 - off, canvas.rows - 1 - off),
+                  cv::Scalar(0, 0, 255), t);  // red (BGR)
+}
 }  // namespace
 
 // Local helper: Resize frame via RGA hardware acceleration (with OpenCV fallback)
@@ -312,6 +353,10 @@ void run_inference_loop(
         int fps_frame_count = 0;
         int fps_processed_count = 0;
 
+        // Rolling zone-detect counter drawn on the annotated frame (upper-right).
+        zone::DetectCounter zone_counter;
+        zone_counter.window_ms = std::max(1, config.zone.window_minutes) * 60000LL;
+
         while (!stop_flag.load(std::memory_order_relaxed)) {
             // Get next frame from mailbox
             auto sf = frame_mailbox->takeFrame();
@@ -451,16 +496,11 @@ void run_inference_loop(
                         }
                     }
 
-                    // Populate person tracks from YOLOX detections for person blur
-                    // Transform coordinates: YOLOX model space (640x640) -> canvas space (dst_w x dst_h)
+                    // Populate person tracks from YOLOX detections for person blur.
+                    // yolo_dets are already in camera space (de-letterboxed by the
+                    // YOLOX runner), so only the camera -> canvas letterbox mapping
+                    // is applied here.
                     if (!fusion_output->yolo_dets.empty()) {
-                        // Step 1: De-letterbox parameters (YOLOX model is 640x640)
-                        const float yolo_model_size = 640.0f;
-                        const float ys = std::min(yolo_model_size / sf->orig_width, yolo_model_size / sf->orig_height);
-                        const float ypad_x = (yolo_model_size - sf->orig_width * ys) / 2.0f;
-                        const float ypad_y = (yolo_model_size - sf->orig_height * ys) / 2.0f;
-
-                        // Step 2: Canvas letterbox parameters (same as face)
                         const float ycanvas_scale = std::min((float)dst_w / sf->orig_width,
                                                              (float)dst_h / sf->orig_height);
                         const int yoffset_x = (dst_w - (int)(sf->orig_width * ycanvas_scale)) / 2;
@@ -472,22 +512,50 @@ void run_inference_loop(
                             if (det.class_id != 0) continue;
                             if (det.score < 0.25f) continue;  // Lower threshold to catch distant people
 
-                            // De-letterbox: model space -> camera space
-                            float cx0 = (det.x0 - ypad_x) / ys;
-                            float cy0 = (det.y0 - ypad_y) / ys;
-                            float cx1 = (det.x1 - ypad_x) / ys;
-                            float cy1 = (det.y1 - ypad_y) / ys;
-
                             // Scale: camera space -> canvas space
                             TrackedBox tb{};
                             tb.id = -1;  // No tracking ID in this context
-                            tb.x0 = cx0 * ycanvas_scale + yoffset_x;
-                            tb.y0 = cy0 * ycanvas_scale + yoffset_y;
-                            tb.x1 = cx1 * ycanvas_scale + yoffset_x;
-                            tb.y1 = cy1 * ycanvas_scale + yoffset_y;
+                            tb.x0 = det.x0 * ycanvas_scale + yoffset_x;
+                            tb.y0 = det.y0 * ycanvas_scale + yoffset_y;
+                            tb.x1 = det.x1 * ycanvas_scale + yoffset_x;
+                            tb.y1 = det.y1 * ycanvas_scale + yoffset_y;
                             tb.score = det.score;
                             result.person_tracks.push_back(tb);
                         }
+                    }
+                }
+
+                // Rolling zone-detect count (upper-right, in the zone color). A
+                // frame counts as in-zone when any YOLO person box satisfies the
+                // zone's any/base predicate; the counter confirms and de-dupes
+                // episodes. fusion_.yolo_dets are already in camera space (the
+                // YOLOX runner de-letterboxes them before storing, same coords the
+                // published in_zone uses), so they are tested directly against the
+                // normalized zone -- no de-letterboxing.
+                if (config.zone.enabled) {
+                    bool in_zone_now = false;
+                    if (fusion_output && sf->orig_width > 0 && sf->orig_height > 0) {
+                        std::lock_guard<std::mutex> g(fusion_output->m);
+                        for (const auto& det : fusion_output->yolo_dets) {
+                            if (det.class_id != 0 || det.score < 0.25f) continue;  // person only
+                            if (zone::box_in_zone(config.zone.mode, det.x0, det.y0, det.x1, det.y1,
+                                                  sf->orig_width, sf->orig_height,
+                                                  config.zone.x0, config.zone.y0,
+                                                  config.zone.x1, config.zone.y1)) {
+                                in_zone_now = true;
+                                break;
+                            }
+                        }
+                    }
+                    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+                    const int detect_count = zone_counter.record(in_zone_now, now_ms);
+                    draw_zone_count(vis_canvas, detect_count, config.zone);
+                    // Red alert border while the zone is triggered: fires on the
+                    // first in-zone frame and clears when the trigger condition
+                    // clears. Its width is independent of the zone outline.
+                    if (zone_counter.triggered(now_ms)) {
+                        draw_alert_border(vis_canvas, config.zone.border_thickness);
                     }
                 }
 

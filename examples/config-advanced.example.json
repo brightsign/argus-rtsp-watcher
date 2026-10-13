@@ -8,7 +8,8 @@
       "zone": [0.10, 0.30, 0.90, 1.00],
       "zone_mode": "base",
       "zone_color": "#ff8800",
-      "zone_thickness": 4
+      "zone_thickness": 4,
+      "zone_border_thickness": 2
     },
     {
       "id": "lobby",

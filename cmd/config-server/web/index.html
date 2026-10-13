@@ -43,11 +43,13 @@
   .thickpick { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; opacity: .85; }
   .thickpick input[type=range] { width: 80px; }
   .thickpick .thickval { min-width: 28px; }
+  .winpick { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; opacity: .85; }
+  .winpick input[type=number] { width: 56px; }
 </style>
 </head>
 <body>
 <h1>Argus Zone Dashboard</h1>
-<p class="sub">Draw a detection zone on each camera's live view, pick its match mode (any / base), outline color, and line width, then Save that pane. Changes apply on the player within a few seconds (no reboot). The zone shows as a faint green outline on the video feed. <b>any</b> = any part of a person's box in the zone counts; <b>base</b> = only when their feet are in it.</p>
+<p class="sub">Draw a detection zone on each camera's live view, pick its match mode (any / base), outline color, line width, and alert-border width, then Save that pane. Changes apply on the player within a few seconds (no reboot). The zone shows as a faint green outline on the video feed. <b>any</b> = any part of a person's box in the zone counts; <b>base</b> = only when their feet are in it.</p>
 <div id="cams"></div>
 
 <div id="bar">
@@ -76,7 +78,7 @@
   // zoneSig captures just the editable fields, so dirty tracking ignores
   // unrelated config (engine block, etc.) the dashboard never touches.
   function zoneSig(s) {
-    return JSON.stringify([s.zone || null, s.zone_mode, s.zone_color, s.zone_thickness]);
+    return JSON.stringify([s.zone || null, s.zone_mode, s.zone_color, s.zone_thickness, s.zone_border_thickness, s.zone_window_minutes]);
   }
   function snapshotBaseline() {
     baseline = Array.isArray(cfg && cfg.streams) ? cfg.streams.map(zoneSig) : [];
@@ -139,8 +141,13 @@
       '<label class="colorpick" title="Zone outline color">' +
       'color <input type="color" class="zonecolor"></label>' +
       '<label class="thickpick" title="Zone outline width (px)">' +
-      'width <input type="range" min="1" max="10" step="1" class="zonethick">' +
+      'line <input type="range" min="1" max="10" step="1" class="zonethick">' +
       '<span class="thickval"></span></label>' +
+      '<label class="thickpick" title="Red alert-border width (px)">' +
+      'border <input type="range" min="1" max="100" step="1" class="zoneborder">' +
+      '<span class="borderval"></span></label>' +
+      '<label class="winpick" title="Rolling window for the on-video detect count">' +
+      'count window <input type="number" min="1" max="1440" step="1" class="zonewin"> min</label>' +
       '<button class="primary savecard">Save</button>' +
       '<span class="cardstatus"></span></div>';
 
@@ -170,6 +177,24 @@
       cfg.streams[idx].zone_thickness = +thickEl.value;
       thickValEl.textContent = thickEl.value + "px";
       redraw();
+      refreshDirty();
+    });
+
+    var borderEl = card.querySelector(".zoneborder");
+    var borderValEl = card.querySelector(".borderval");
+    borderEl.value = cfg.streams[idx].zone_border_thickness || 20;
+    borderValEl.textContent = borderEl.value + "px";
+    borderEl.addEventListener("input", function () {
+      cfg.streams[idx].zone_border_thickness = +borderEl.value;
+      borderValEl.textContent = borderEl.value + "px";
+      refreshDirty();
+    });
+
+    var winEl = card.querySelector(".zonewin");
+    winEl.value = cfg.streams[idx].zone_window_minutes || 15;
+    winEl.addEventListener("input", function () {
+      var v = parseInt(winEl.value, 10);
+      cfg.streams[idx].zone_window_minutes = (v >= 1 && v <= 1440) ? v : 15;
       refreshDirty();
     });
 
@@ -276,6 +301,10 @@
             if (!/^#[0-9A-Fa-f]{6}$/.test(s.zone_color || "")) s.zone_color = "#ffffff";
             var t = parseInt(s.zone_thickness, 10);
             s.zone_thickness = (t >= 1 && t <= 10) ? t : 3;
+            var bt = parseInt(s.zone_border_thickness, 10);
+            s.zone_border_thickness = (bt >= 1 && bt <= 100) ? bt : 20;
+            var wm = parseInt(s.zone_window_minutes, 10);
+            s.zone_window_minutes = (wm >= 1 && wm <= 1440) ? wm : 15;
           });
         }
         render();

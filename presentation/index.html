@@ -34,17 +34,6 @@
       object-fit: contain;
       display: block;
     }
-    /* A tile flashes a bright red inner border while its stream has a detected
-       person. box-shadow inset overlays the tile edges without resizing the
-       video; the animation blinks it on/off. */
-    .tile.alert {
-      animation: argus-flash 0.6s steps(1, end) infinite;
-    }
-    @keyframes argus-flash {
-      0%   { box-shadow: inset 0 0 0 10px #ff0000; }
-      50%  { box-shadow: inset 0 0 0 10px rgba(255, 0, 0, 0); }
-      100% { box-shadow: inset 0 0 0 10px #ff0000; }
-    }
   </style>
 </head>
 <body>
@@ -68,19 +57,13 @@
     var PORTS = [20200, 20201, 20202, 20203];
     var RETRY_MS = 3000;
 
-    // STREAM_IDS maps each tile (same order as PORTS) to the stream's id, which
-    // is the MQTT topic segment (bs/argus/<id>/analytics). It MUST match the
-    // order of streams[] in config.json (which also assigns the preview ports).
-    // Edit PORTS and STREAM_IDS together when the stream set changes.
-    var STREAM_IDS = ["pixley", "front-porch", "back-door", "reo1"];
-    var WS_URL = "ws://" + HOST + ":9001";   // mosquitto MQTT-over-WebSockets listener
-    var EVENT_HOLD_MS = 1500;                 // keep a tile flashing this long after the last in-zone event
-
-    var tiles = document.querySelectorAll("#wall .tile");
     var imgs = document.querySelectorAll("#wall img");
-    var alertTimers = [];
 
     // ---- MJPEG feeds ----
+    // The in-zone alert is a red border burned into the video by the engine (width
+    // = the stream's zone border thickness). The wall shows the feeds unaltered;
+    // the only browser-side cue is an audible alert tone (see below), never a
+    // visual flash.
 
     function streamUrl(port) {
       // Cache-buster forces a fresh connection on each (re)connect so a
@@ -113,28 +96,56 @@
       mount(imgs[i], PORTS[i]);
     }
 
-    // ---- In-zone detection (flash red border) ----
-    // The engine publishes a bs/argus/<id>/zone_event the instant two in-zone
-    // detections land within a 1s window (keyed off the stream's any/base mode),
-    // so the flash fires fast and only for people inside the configured zone.
+    // ---- In-zone audio alert ----
+    // The engine publishes bs/argus/<id>/zone_event the instant two in-zone
+    // detections land within a 1s window (keyed off the stream's any/base mode).
+    // Each event plays a short alert tone. The red alert border is burned into
+    // the video by the engine; this page adds only the audible cue and never a
+    // visual flash (the HTML flash was removed deliberately).
+    var WS_URL = "ws://" + HOST + ":9001";   // mosquitto MQTT-over-WebSockets listener
+    var ALERT_COOLDOWN_MS = 2000;            // play at most one tone this often, across all streams
+    var ALERT_FREQ_HZ = 880;                 // alert tone pitch
+    var ALERT_MS = 150;                      // alert tone duration
+    var lastAlertMs = 0;
+    var audioCtx = null;
 
-    function setAlert(idx, on) {
-      if (idx < 0 || idx >= tiles.length) return;
-      tiles[idx].classList.toggle("alert", !!on);
-    }
-
-    function onZoneEvent(streamId) {
-      var idx = STREAM_IDS.indexOf(streamId);
-      if (idx < 0) return;
-      setAlert(idx, true);
-      if (alertTimers[idx]) clearTimeout(alertTimers[idx]);
-      alertTimers[idx] = setTimeout(function () { setAlert(idx, false); }, EVENT_HOLD_MS);
+    function playAlert() {
+      var now = Date.now();
+      if (now - lastAlertMs < ALERT_COOLDOWN_MS) return;
+      lastAlertMs = now;
+      // Audio may be absent or blocked on a given player; a failure here must
+      // never take down the video wall, so it is contained -- matching the
+      // WebSocket guards below, which use the same pattern for the same reason.
+      try {
+        if (audioCtx === null) {
+          var AC = window.AudioContext || window.webkitAudioContext;
+          if (!AC) return;
+          audioCtx = new AC();
+        }
+        // The wall runs unattended, so there is no user gesture to unlock
+        // audio; BrightSign's HTML engine permits autoplay, but a context that
+        // starts suspended still needs an explicit resume.
+        if (audioCtx.state === "suspended" && audioCtx.resume) audioCtx.resume();
+        var osc = audioCtx.createOscillator();
+        var gain = audioCtx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = ALERT_FREQ_HZ;
+        var t0 = audioCtx.currentTime;
+        var dur = ALERT_MS / 1000;
+        // Short ramps so the tone fades in and out instead of clicking.
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(0.3, t0 + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(t0);
+        osc.stop(t0 + dur + 0.02);
+      } catch (e) {}
     }
 
     // Minimal MQTT 3.1.1 over WebSockets, subscribe-only, QoS 0 -- no external
     // library (the player is offline). The watcher's mosquitto serves MQTT over
-    // WS on :9001; each stream publishes bs/argus/<id>/analytics once per second and
-    // a bs/argus/<id>/zone_event the moment an in-zone detection is confirmed.
+    // WS on :9001; each stream publishes bs/argus/<id>/analytics once per second
+    // and a bs/argus/<id>/zone_event the moment an in-zone detection is confirmed.
     function mqttConnect() {
       var ws;
       try { ws = new WebSocket(WS_URL, "mqtt"); }
@@ -165,16 +176,15 @@
         send([0x82].concat(encLen(body.length), body));
       }
 
-      function handlePublish(b, qos) {
+      function handlePublish(b) {
         var tlen = (b[0] << 8) | b[1];
         var topic = "";
         for (var k = 0; k < tlen; k++) topic += String.fromCharCode(b[2 + k]);
         var parts = topic.split("/");            // bs/argus/<id>/{analytics|zone_event}
-        var id = parts.length >= 3 ? parts[2] : "";
         var kind = parts.length >= 4 ? parts[3] : "";
-        // Only the low-latency in-zone event drives the flash; analytics messages
-        // are ignored here (flashing is in-zone only, not any detected person).
-        if (kind === "zone_event") { onZoneEvent(id); }
+        // Only the low-latency in-zone event plays a tone; analytics messages
+        // are ignored (audio is in-zone only, not any detected person).
+        if (kind === "zone_event") { playAlert(); }
       }
 
       function parse() {
@@ -183,7 +193,6 @@
           if (buf.length - i < 2) break;
           var first = buf[i];
           var type = first >> 4;
-          var qos = (first >> 1) & 0x03;
           var mult = 1, rl = 0, p = i + 1, b;
           do {
             if (p >= buf.length) { buf = buf.subarray(i); return; } // incomplete length
@@ -194,7 +203,7 @@
           if (type === 2) {                        // CONNACK
             if (bodyBytes.length >= 2 && bodyBytes[1] === 0) sendSubscribe("bs/argus/#");
           } else if (type === 3) {                 // PUBLISH
-            handlePublish(bodyBytes, qos);
+            handlePublish(bodyBytes);
           }
           i = p + rl;
         }
@@ -215,7 +224,6 @@
       });
       function reconnect() {
         if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
-        for (var k = 0; k < tiles.length; k++) setAlert(k, false); // nothing stuck red
         setTimeout(mqttConnect, RETRY_MS);
       }
       ws.addEventListener("close", reconnect);

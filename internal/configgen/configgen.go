@@ -63,9 +63,18 @@ func Render(s config.Stream, o Options) ([]byte, error) {
 		if thickness == 0 {
 			thickness = config.DefaultZoneThickness
 		}
+		borderThickness := s.ZoneBorderThickness
+		if borderThickness == 0 {
+			borderThickness = config.DefaultZoneBorderThickness
+		}
+		windowMinutes := s.ZoneWindowMin
+		if windowMinutes == 0 {
+			windowMinutes = config.DefaultZoneWindowMinutes
+		}
 		m["zone"] = map[string]any{
 			"x0": s.Zone[0], "y0": s.Zone[1], "x1": s.Zone[2], "y1": s.Zone[3],
 			"mode": mode, "color": color, "thickness": thickness,
+			"border_thickness": borderThickness, "window_minutes": windowMinutes,
 		}
 	}
 

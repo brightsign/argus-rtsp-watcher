@@ -23,20 +23,23 @@ The watcher runs one MJPEG preview server per stream at
 A port with no listener leaves that quadrant **solid black** and is retried
 every few seconds, so feeds may start, stop, and restart without a reload.
 
-## Live in-zone detection border
+## Live in-zone detection border and audio alert
 
-Each tile **flashes a bright red border while a person is detected inside that
-stream's configured zone**. The engine fires a low-latency event the instant two
-in-zone detections land within a 1-second window (keyed off the stream's `any`/`base`
-zone mode), published on **MQTT-over-WebSockets** (`ws://127.0.0.1:9001`,
-`bs/argus/<id>/zone_event`). The page subscribes with a tiny inline MQTT client — no
-external library, since the player is offline. Each event (re)lights the tile for ~1.5s;
-it clears when no further events arrive. A stream with no configured zone never flashes.
+When a person is detected inside a stream's configured zone, a **red border is burned
+into the video itself** by the engine — fired immediately, held while the zone stays
+triggered, and cleared when the trigger condition clears. Its width matches that
+stream's `zone_border_thickness`. This wall just displays the feeds, so the border
+shows up automatically; there is no browser-side visual flash. A stream with no
+configured zone never shows the border.
 
-This needs the watcher's mosquitto to serve WebSockets (it adds a `listener 9001
-protocol websockets`, and the broker is built `-DWITH_WEBSOCKETS=ON`). The tile→stream
-mapping lives in `STREAM_IDS` at the top of `index.html` and **must match the order of
-`streams[]` in `config.json`** (same order that assigns the preview ports).
+The page also plays a short **audio alert tone** on each in-zone event. A tiny
+subscribe-only MQTT-over-WebSockets client (inline, no library) listens for the
+engine's `bs/argus/<id>/zone_event` messages and sounds a Web Audio beep, rate-limited
+to one tone every two seconds across all streams. This needs the watcher's mosquitto to
+serve WebSockets (it adds a `listener 9001 protocol websockets`, and the broker is built
+`-DWITH_WEBSOCKETS=ON`). The alert is stream-agnostic — it subscribes to `bs/argus/#`,
+so no tile→stream mapping is required. The player must allow HTML audio autoplay, which
+BrightSign's HTML engine does by default.
 
 ## Files
 

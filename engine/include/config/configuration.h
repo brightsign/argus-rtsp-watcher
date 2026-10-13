@@ -54,8 +54,10 @@ struct AppConfig {
   // membership test for in_zone: "any" (any part of the box overlaps the zone,
   // the default) or "base" (the box's feet/bottom-center must be inside). color
   // is the "#RRGGBB" outline color drawn on the annotated frame (default white).
-  // thickness is the outline width in pixels (default 3).
-  struct Zone { bool enabled{false}; std::string mode{"any"}; std::string color{"#ffffff"}; int thickness{3}; float x0{0}, y0{0}, x1{0}, y1{0}; };
+  // thickness is the outline width in pixels (default 3). border_thickness is
+  // the red alert-border width (default 20). window_minutes is the rolling window
+  // for the on-frame zone-detect counter (default 15).
+  struct Zone { bool enabled{false}; std::string mode{"any"}; std::string color{"#ffffff"}; int thickness{3}; int border_thickness{20}; int window_minutes{15}; float x0{0}, y0{0}, x1{0}, y1{0}; };
   Zone zone;
 
   // Face blur options (for privacy in output frames)

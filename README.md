@@ -2,6 +2,12 @@
 
 Run real-time person and gaze analytics on **multiple RTSP camera feeds** from a single NPU-equipped BrightSign player.
 
+> **Building this? Read [docs/PRE-REQS.md](docs/PRE-REQS.md) first.** The cross-compile
+> SDK, RKNN toolkit, and compiled models come from a **shared build cache outside the
+> repo** (`BS_CACHE_DIR`, default `../argus-build-cache`), provisioned once per box and
+> reused across the sibling BrightSign NPU extensions. PRE-REQS covers populating that
+> cache and pointing this repo at it; then `make package` builds everything.
+
 ## What it does
 
 Argus RTSP Watcher turns one BrightSign player into a multi-camera audience-measurement node. Point it at several RTSP streams and it runs the [Argus](../argus-audience-measurement-extension) person + gaze pipeline on each one, on the player's Rockchip NPU, and publishes per-stream analytics over MQTT.
@@ -74,7 +80,7 @@ Configuring more streams than a tier's capacity is a startup warning, not a fail
 
 - **A player**: an NPU-equipped BrightSign player (RK3588/RK3576/RK3568) with SSH enabled.
 - **RTSP sources** reachable from the player, carrying **plain RTSP** H.264/H.265. Cameras that only offer secure RTSP (`rtsps://` / SRTP, e.g. UniFi Protect) must be fronted by an RTSP proxy — see [RTSP sources & MediaMTX](#rtsp-sources--mediamtx). To test with **no cameras at all**, serve looped video files as RTSP with the harness in [test/rtsp-sim/](test/rtsp-sim/).
-- **To build**: an x86_64 Linux host with Docker (for RKNN model compilation), Go 1.22+, `git`, network access, and the BrightSign aarch64 cross-compile SDK. All runtime assets are built on the host from pinned upstream sources; you cannot build on the player. See [Building](#building) for the per-asset breakdown.
+- **To build**: an x86_64 Linux host with Docker (for RKNN model compilation), Go 1.22+, `git`, network access, and the BrightSign aarch64 cross-compile SDK. All runtime assets are built on the host from pinned upstream sources; you cannot build on the player. See **[docs/PRE-REQS.md](docs/PRE-REQS.md)** for one-time SDK + shared-cache setup, and [Building](#building) for the per-asset breakdown.
 
 ## Quick start
 
@@ -392,6 +398,54 @@ make build      # cross-compile watcher + engine for all SoCs and produce the ex
 - `argus-rtsp-watcher-ext-<ts>.zip` — the LVM **extension** (install this on a player).
 - `argus-rtsp-watcher-<ts>.zip` — a dev bundle you unzip and run directly.
 
+### First-time setup (once per build box)
+
+The heavy, box-level assets — the cross-compile **SDK**, the **RKNN toolkit**, and the compiled **models** — are **not** built in this repo. They live in a **shared build cache outside the repo** (`sdk/`, `toolkit/`, `models/`), built **once per build box** and reused by every BrightSign NPU project. The first-time flow is: **(1)** build the SDK into the cache, **(2)** compile the models into the cache, **(3)** point this repo at the cache, then **(4)** build. See **[docs/PRE-REQS.md](docs/PRE-REQS.md)** for the full version with a diagram, supported targets, and troubleshooting.
+
+#### Step 1 — Download and compile the SDK into the cache
+
+The SDK is produced by the sibling [`brightsign-sdk-builder`](https://github.com/brightsign/brightsign-sdk-builder) repo, which downloads the BrightSign OS source and cross-compiles the cobra toolchain straight into the shared cache. Check it out **parallel** to this repo and build it:
+
+```bash
+cd ..
+git clone https://github.com/brightsign/brightsign-sdk-builder.git
+cd brightsign-sdk-builder
+make build        # downloads OS source, builds the SDK into ../argus-build-cache/sdk (network + ~25 GB; HOURS)
+```
+
+This fills `../argus-build-cache/sdk/` (the default cache location, parallel to both repos).
+
+> **Or let this repo do it for you.** If the cache is configured but has no SDK, `make build` in **this** repo auto-runs the builder (it is a `fetch-sdk` dependency). Disable the auto-build with `AUTO_BUILD_SDK=0`, or install a prebuilt `brightsign-x86_64-cobra-toolchain-*.sh` with `make fetch-sdk SDK_INSTALLER=/path/to/installer.sh`. Either way the SDK is a one-time, hours-long build. See [docs/PRE-REQS.md § Phase 1](docs/PRE-REQS.md#phase-1--populate-the-shared-cache-one-time-per-box).
+
+#### Step 2 — Compile the RKNN models into the cache (needs Docker)
+
+```bash
+# in this repo
+make build-models   # compiles RetinaFace + YOLOX per SoC into ../argus-build-cache/models/<SOC>/
+```
+
+Needs Docker + ~10 GB + network; idempotent once the models are present. `make build` runs this automatically as a dependency, but you can pre-stage it here.
+
+#### Step 3 — Configure this repo to point at the cache
+
+If this repo is checked out parallel to `brightsign-sdk-builder`, the default cache (`../argus-build-cache`) resolves automatically and this step is optional. Otherwise, tell the repo where the cache lives:
+
+```bash
+cp cache.env.example cache.env
+# edit cache.env:  BS_CACHE_DIR := /abs/path/to/argus-build-cache
+make cache-info     # show the resolved cache and whether sdk / toolkit / models are present
+```
+
+`cache.env` is git-ignored. A command-line override always wins: `make build BS_CACHE_DIR=/path/to/argus-build-cache`.
+
+#### Step 4 — Build the packages
+
+```bash
+make build          # == make package: cross-compile all SoCs, sync models from the cache, emit the zips
+```
+
+`make build` (an alias for `make package`) depends on `fetch-sdk` + `build-models`, so a missing SDK or models is provisioned automatically — or the build stops with an actionable message. It produces the two zips described above. Host-only `make run-tests` needs no SDK.
+
 ### Build-time assets (self-contained)
 
 The repo has **no dependency on a sibling Argus tree**. Every runtime asset is produced on demand from pinned upstream sources on the first `make build` and cached under gitignored `build/` (re-runs skip what's already built):
@@ -408,20 +462,11 @@ The repo has **no dependency on a sibling Argus tree**. Every runtime asset is p
 
 The **RKNN headers and runtime** are not vendored: the Rockchip RKNN API headers and `librknnrt.so` are fetched from the pinned upstream (`airockchip/rknn-toolkit2` `v2.3.0`) by `make prep` into `engine/include/` (a prerequisite of the engine build), so no Rockchip-proprietary bytes live in this repo.
 
-The **cross-compile SDK**, the **RKNN toolkit clone**, and the **compiled models** live in a **shared build cache outside the repo** (default `../argus-build-cache`, parallel to this checkout; override with `ARGUS_CACHE_DIR`), so they are produced once and reused across sibling projects. Run `make cache-info` to see the resolved location and what is present.
+The **cross-compile SDK**, the **RKNN toolkit clone**, and the **compiled models** live in a **shared build cache outside the repo** (default `../argus-build-cache`, parallel to this checkout; override with `BS_CACHE_DIR` in `cache.env` — see [`cache.env.example`](cache.env.example)), so they are produced once and reused across sibling projects. Run `make cache-info` to see the resolved location and what is present. Full one-time setup is in **[docs/PRE-REQS.md](docs/PRE-REQS.md)**.
 
-### One-time per build box
+### Resetting the build
 
-The SDK (BrightSign 9.1 series), the RKNN toolkit, and the `rknn_tk2` Docker image are **provisioned once per build box** by the separate [`brightsign-sdk-builder`](https://github.com/brightsign/brightsign-sdk-builder) repo, which downloads the BrightSign OS source, builds the custom SDK, and installs it into a shared cache that sits **outside any single repo**. Clone and build it once:
-
-```bash
-git clone https://github.com/brightsign/brightsign-sdk-builder.git
-cd brightsign-sdk-builder && make build
-```
-
-Do this **once per machine**. After that first (~multi-hour) run, this repo and our other example extensions all cross-compile against the same cached SDK/toolkit/models — no per-repo SDK rebuild. This repo's `make build` then finds the SDK already installed (and the toolkit + image present) and proceeds straight to the app build; host-only `make run-tests` stays SDK-free. If you instead already have a `brightsign-x86_64-cobra-toolchain-*.sh` installer, `make fetch-sdk` will install it from the shared cache dir, the repo root, or `make build SDK_INSTALLER=/path/to/installer.sh`. Each target guards its inputs and fails with a clear message when something is missing.
-
-To reset: `make clean` returns this checkout to a freshly-cloned state (removes `build/`, `staging/`, zips, and the fetched prep headers) while leaving the shared cache; `make cache-clean` removes the shared cache for all projects.
+`make clean` returns this checkout to a freshly-cloned state (removes `build/`, `staging/`, zips, and the fetched prep headers) while leaving the shared cache intact. `make cache-clean` removes the shared cache itself — for **all** projects — forcing the hours-long SDK rebuild in [Step 1](#step-1--download-and-compile-the-sdk-into-the-cache) next time.
 
 ## Deploying to a player
 
@@ -503,6 +548,7 @@ Logs: `tail -f /tmp/watcher.log` on the player (engine + watcher output).
 
 ## Documentation
 
+- **[docs/PRE-REQS.md](docs/PRE-REQS.md)** — SDK, shared build cache, and `cache.env` setup; read before building.
 - **[docs/bounding-boxes.md](docs/bounding-boxes.md)** — live bounding-box data over MQTT (schema, coordinates, examples).
 - **[docs/recording-and-sync.md](docs/recording-and-sync.md)** — record the MJPEG streams and match them to the box data by frame.
 - **[tools/README.md](tools/README.md)** — host tools: zone picker, recorder, framebox, boxstats.

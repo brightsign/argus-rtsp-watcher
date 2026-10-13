@@ -4,7 +4,9 @@
 # expensive to produce and are identical across projects, so they live in a
 # cache OUTSIDE any one repo and are downloaded/built once and reused.
 #
-# Override the location with ARGUS_CACHE_DIR (absolute recommended; a relative
+# This cache is deliberately SHARED with the other BrightSign NPU extensions
+# (e.g. brightsign-voice-llm-extension), so one cobra-toolchain SDK serves them
+# all. Override the location with BS_CACHE_DIR (absolute recommended; a relative
 # value is resolved against the repo root). The default sits parallel to the
 # repo so it is "next to" the checkout, not inside it.
 #
@@ -19,10 +21,10 @@
 _cache_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$(cd "${_cache_lib_dir}/../.." && pwd)}"
 
-if [ -n "${ARGUS_CACHE_DIR:-}" ]; then
-    case "${ARGUS_CACHE_DIR}" in
-        /*) CACHE_DIR="${ARGUS_CACHE_DIR}" ;;
-        *)  CACHE_DIR="${REPO_ROOT}/${ARGUS_CACHE_DIR}" ;;
+if [ -n "${BS_CACHE_DIR:-}" ]; then
+    case "${BS_CACHE_DIR}" in
+        /*) CACHE_DIR="${BS_CACHE_DIR}" ;;
+        *)  CACHE_DIR="${REPO_ROOT}/${BS_CACHE_DIR}" ;;
     esac
 else
     CACHE_DIR="${REPO_ROOT}/../argus-build-cache"

@@ -136,6 +136,38 @@ TEST(EventWindow, RateLimitsRepeatedFires) {
     EXPECT_TRUE(w.record(true, 650));     // >=500ms since last fire -> fire again
 }
 
+TEST(DetectCounter, TriggeredFiresImmediatelyAndHolds) {
+    zone::DetectCounter c;
+    c.trigger_hold_ms = 750;
+    c.record(true, 1000);
+    EXPECT_TRUE(c.triggered(1000));    // fires on the first in-zone frame
+    c.record(false, 1200);
+    EXPECT_TRUE(c.triggered(1200));    // still within the hold after leaving
+    EXPECT_TRUE(c.triggered(1700));    // 700ms since last in-zone, still held
+    EXPECT_FALSE(c.triggered(1800));   // 800ms > hold -> cleared
+}
+
+TEST(DetectCounter, TriggeredFalseBeforeAnyDetection) {
+    zone::DetectCounter c;
+    EXPECT_FALSE(c.triggered(0));
+    EXPECT_FALSE(c.triggered(100000));
+}
+
+TEST(DetectCounter, CountsEpisodesOverWindow) {
+    zone::DetectCounter c;
+    c.window_ms = 10000;
+    c.episode_gap_ms = 2000;
+    // First episode: two in-zone frames confirm -> count 1.
+    c.record(true, 0);
+    EXPECT_EQ(c.record(true, 100), 1);
+    EXPECT_EQ(c.record(true, 200), 1);     // same episode, still 1
+    // Zone clears past the episode gap.
+    EXPECT_EQ(c.record(false, 2500), 1);
+    // Second episode -> count 2.
+    c.record(true, 3000);
+    EXPECT_EQ(c.record(true, 3100), 2);
+}
+
 TEST(EventWindow, ResetClearsHits) {
     zone::EventWindow w;
     EXPECT_FALSE(w.record(true, 0));

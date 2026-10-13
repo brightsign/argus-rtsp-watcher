@@ -15,22 +15,28 @@ MEDIAMTX_DIR := build/mediamtx
 # brightsign-x86_64-cobra-toolchain-*.sh.
 SDK_INSTALLER ?=
 
+# Local, untracked shared-cache location for this build box. Loaded via
+# `-include` so a missing file is not an error; a command-line BS_CACHE_DIR=...
+# still overrides it. See cache.env.example.
+-include cache.env
+
 # Shared build cache (SDK + RKNN toolkit clone + compiled models) lives OUTSIDE
-# the repo so it is downloaded/built once and reused across projects. Override
-# the location with ARGUS_CACHE_DIR (default: ../argus-build-cache, parallel to
-# this repo). scripts/lib/cache.sh is the single source of truth -- the shell-outs
-# below ask it for the resolved absolute paths so Make and the scripts agree.
-# ARGUS_CACHE_DIR is forwarded explicitly: a command-line override is a Make
-# variable, not an env var, so $(shell ...) would not otherwise see it.
-CACHE_SH := ARGUS_CACHE_DIR='$(ARGUS_CACHE_DIR)' bash scripts/lib/cache.sh print
+# the repo so it is downloaded/built once and reused across projects -- it is the
+# SAME cache the sibling BrightSign NPU extensions use. Override the location
+# with BS_CACHE_DIR (default: ../argus-build-cache, parallel to this repo), set
+# in cache.env or on the command line. scripts/lib/cache.sh is the single source
+# of truth -- the shell-outs below ask it for the resolved absolute paths so Make
+# and the scripts agree. BS_CACHE_DIR is forwarded explicitly: a command-line
+# override is a Make variable, not an env var, so $(shell ...) would not see it.
+CACHE_SH := BS_CACHE_DIR='$(BS_CACHE_DIR)' bash scripts/lib/cache.sh print
 CACHE_DIR := $(shell $(CACHE_SH) cache)
 SDK_DIR := $(shell $(CACHE_SH) sdk)
 SDK_ENV := $(shell $(CACHE_SH) sdk-env)
 TOOLKIT_DIR := $(shell $(CACHE_SH) toolkit)
 MODELS_DIR := $(shell $(CACHE_SH) models)
 # Ensure the recipe scripts (which source cache.sh themselves) resolve the same
-# location, including when ARGUS_CACHE_DIR was given on the command line.
-export ARGUS_CACHE_DIR
+# location, including when BS_CACHE_DIR was given on the command line.
+export BS_CACHE_DIR
 
 # Packaging: the engine, mosquitto broker, runtime libs, and image-stream-server
 # are all generic aarch64 (same for every SoC), so each is built once and staged
@@ -64,7 +70,7 @@ build: package       ## Build watcher + engine, stage all SoCs, and package -> z
 prep:                ## Fetch the Rockchip-origin RKNN headers + runtime into engine/include/ (needs network; not vendored)
 	bash scripts/prep.sh
 
-fetch-sdk:           ## Install the aarch64 cross-compile SDK into the shared cache (needs the cobra toolchain installer; pass SDK_INSTALLER=/path or drop it in the cache dir / repo root)
+fetch-sdk:           ## Provision the aarch64 SDK into the shared cache: install from SDK_INSTALLER if given, else auto-build via brightsign-sdk-builder when the cache is empty (Docker, hours; AUTO_BUILD_SDK=0 disables)
 	bash scripts/fetch-sdk.sh $(SDK_INSTALLER)
 
 build-watcher:       ## Cross-compile the Go watcher for arm64
@@ -145,7 +151,7 @@ copy:                ## scp the most recent *.zip to the player (needs BS_PLAYER
 		echo "Copied. On the player's root shell (Ctrl-C,Enter -> exit -> exit), run:  sh $(PLAYER_DEST)/$(INSTALL_HELPER)   (reboots on success; stays in the shell on failure)"
 
 cache-info:          ## Show the resolved shared-cache location and what is present
-	@echo "ARGUS_CACHE_DIR : $(if $(ARGUS_CACHE_DIR),$(ARGUS_CACHE_DIR) (override),(unset -> default))"
+	@echo "BS_CACHE_DIR : $(if $(BS_CACHE_DIR),$(BS_CACHE_DIR) (override),(unset -> default))"
 	@echo "cache   : $(CACHE_DIR)"
 	@echo "sdk     : $(SDK_DIR)  [$(if $(wildcard $(SDK_ENV)),present,absent)]"
 	@echo "toolkit : $(TOOLKIT_DIR)  [$(if $(wildcard $(TOOLKIT_DIR)),present,absent)]"

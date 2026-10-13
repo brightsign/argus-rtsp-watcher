@@ -212,23 +212,35 @@ An optional per-stream `zone_mode` selects how `in_zone` is decided:
 - `"any"` (default): `true` when **any part** of the person's bounding box overlaps the zone.
 - `"base"`: `true` only when the person's **feet** (box bottom-center) are inside the zone.
 
-An optional per-stream `zone_color` sets the outline color drawn on the annotated frame, as a `#RRGGBB` hex string (default `#ffffff`, white). An optional `zone_thickness` sets the outline width in pixels, `1`–`10` (default `3`).
+A few optional per-stream fields control how the zone is drawn and counted on the annotated frame:
+
+- `zone_color` — outline color as a `#RRGGBB` hex string (default `#ffffff`, white).
+- `zone_thickness` — outline width in pixels, `1`–`10` (default `3`).
+- `zone_border_thickness` — red alert-border width in pixels, `1`–`100` (default `20`), independent of the outline width.
+- `zone_window_minutes` — rolling window for the on-frame detect counter, `1`–`1440` (default `15`).
 
 ```json
-{ "id": "checkout", "rtsp_url": "rtsp://…", "zone": [0.146, 0.104, 0.781, 0.972], "zone_mode": "base", "zone_color": "#ff8800", "zone_thickness": 4 }
+{ "id": "checkout", "rtsp_url": "rtsp://…", "zone": [0.146, 0.104, 0.781, 0.972], "zone_mode": "base", "zone_color": "#ff8800", "zone_thickness": 4, "zone_window_minutes": 15 }
 ```
 
-Editing a stream's `zone`, `zone_mode`, `zone_color`, or `zone_thickness` in `config.json` triggers a live restart of only that camera's engine — no need to reboot the extension. The on-player **zone dashboard** (port `20300`) lets you draw the zone on each camera's live view, flip the any/base toggle, pick the outline color and line width, and Save per pane. The companion `tools/boxstats` tool can answer offline area-range questions from recorded video.
+Editing any of these in `config.json` triggers a live restart of only that camera's engine — no need to reboot the extension. The on-player **zone dashboard** (port `20300`) lets you draw the zone on each camera's live view, flip the any/base toggle, pick the outline color and line width, set the count window, and Save per pane. The companion `tools/boxstats` tool can answer offline area-range questions from recorded video.
+
+### On-frame detect counter and red alert border
+
+The engine draws two things on the annotated frame (the preview feed and the video walls) for a stream with a zone:
+
+- **Detect counter** — the number of distinct in-zone detection episodes in the last `zone_window_minutes`, drawn in the upper-right corner in the zone's color, at the frame-stamp text size. A new episode is counted when the zone goes from empty to occupied; continuous presence counts once.
+- **Red alert border** — a red border (width = `zone_border_thickness`, independent of the outline) burned around the whole frame while the zone is triggered. It fires on the first in-zone frame and holds solid across brief detection gaps, clearing shortly after the trigger condition clears. The bundled video walls (`presentation/`, `presentation2/`) simply display the feeds, so this border appears there automatically — there is no browser-side flashing.
 
 ### Low-latency in-zone event (`zone_event`)
 
-The per-track `in_zone` field above rides the regular analytics message, which is throttled to one publish per second. For a fast UI reaction (e.g. flashing a video wall), a stream with a zone also publishes a dedicated event on a sibling topic, **`bs/argus/<id>/zone_event`**, the moment **two in-zone detections land within a rolling 1-second window** (using the same `any`/`base` predicate). It then repeats at most every 500 ms while in-zone activity continues, and stops when it ends. This bypasses the 1 Hz analytics tick, so consumers react within a frame or two instead of up to a second.
+The per-track `in_zone` field above rides the regular analytics message, which is throttled to one publish per second. For external consumers that want a fast signal, a stream with a zone also publishes a dedicated event on a sibling topic, **`bs/argus/<id>/zone_event`**, the moment **two in-zone detections land within a rolling 1-second window** (using the same `any`/`base` predicate). It then repeats at most every 500 ms while in-zone activity continues, and stops when it ends. This bypasses the 1 Hz analytics tick, so consumers react within a frame or two instead of up to a second.
 
 ```json
 { "device_id": "checkout", "event": "in_zone", "in_zone": 2, "mode": "base", "ts_ms": 1733520000123 }
 ```
 
-`in_zone` is the number of tracks inside the zone on the firing frame; `ts_ms` is a monotonic millisecond timestamp. The bundled video walls (`presentation/`, `presentation2/`) consume this topic to flash a pane for ~1.5 s per event.
+`in_zone` is the number of tracks inside the zone on the firing frame; `ts_ms` is a monotonic millisecond timestamp. (The in-frame red border is driven independently by the engine, not by this topic.)
 
 ## Consuming the data
 
