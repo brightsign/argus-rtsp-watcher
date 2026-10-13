@@ -559,4 +559,20 @@ Logs: `tail -f /tmp/watcher.log` on the player (engine + watcher output).
 
 ## License
 
-See the repository. Engine components are derived from the Argus Audience Measurement Extension.
+The original work in this repository is licensed under the **Apache License,
+Version 2.0** — see [LICENSE](LICENSE) and [NOTICE](NOTICE). That covers the Go
+supervisor (`cmd/`, `internal/`), the build and packaging scripts, the tools,
+and the documentation.
+
+This project also **collects together and packages a number of independently
+licensed third-party components, which retain their own licenses.** The
+Apache-2.0 grant does not relicense them. In particular:
+
+- The analytics engine under `engine/` is **derived from the BrightSign Argus
+  Audience Measurement Extension** and carries its upstream license.
+- The **Rockchip RKNN** runtime and headers are proprietary to Rockchip and are
+  redistributed under Rockchip's own terms.
+- Bundled runtime libraries — **Eclipse Mosquitto, MediaMTX, FFmpeg, GStreamer,
+  OpenCV, OpenSSL**, and others — each remain under their respective licenses.
+
+See **[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)** for the full inventory.

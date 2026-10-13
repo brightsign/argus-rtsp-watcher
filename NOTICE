@@ -1,0 +1,35 @@
+Argus RTSP Watcher
+Copyright 2025 BrightSign, LLC
+
+This product is licensed under the Apache License, Version 2.0 (see the
+LICENSE file). This NOTICE file is provided for attribution purposes in
+accordance with Section 4(d) of that license.
+
+----------------------------------------------------------------------
+
+This repository is, in part, an aggregation: it collects together and
+packages a number of independently licensed third-party components. The
+Apache License, Version 2.0 applies ONLY to the original work authored in
+this repository (the Go supervisor under cmd/ and internal/, the build and
+packaging scripts, the tools, and the project documentation).
+
+It does NOT relicense the bundled or derived third-party components. Each
+such component remains under its own license and copyright, which continue
+to govern that component. See THIRD-PARTY-NOTICES.md for the inventory of
+those components and their licenses.
+
+Notable components NOT covered by this project's Apache-2.0 grant include,
+among others:
+
+  - The analytics engine under engine/, which is derived from the BrightSign
+    Argus Audience Measurement Extension and carries its upstream license.
+  - The Rockchip RKNN runtime and headers (librknnrt.so, rknn_api.h, and
+    related files), which are proprietary to Rockchip and are redistributed
+    under Rockchip's own terms.
+  - Eclipse Mosquitto (EPL-2.0 / EDL-1.0), MediaMTX, FFmpeg, GStreamer,
+    OpenCV, OpenSSL, and other runtime libraries bundled into the packaged
+    player extension.
+
+If any term of a bundled component's license conflicts with the Apache-2.0
+terms as applied to that component, the component's own license controls for
+that component.
