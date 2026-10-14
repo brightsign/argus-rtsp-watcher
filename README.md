@@ -12,7 +12,7 @@ Want to see it run before building anything? Grab the prebuilt extension, drop i
    curl -L -O https://github.com/brightsign/argus-rtsp-watcher/releases/download/v0.1.2/cobra-standalone-npu_watch-0.1.2.bsfw
    ```
 
-   This is the **XT5 (RK3588)** standalone build, v0.1.2. See the [releases page](https://github.com/brightsign/argus-rtsp-watcher/releases) for other versions.
+   This is the **cobra-family** standalone build, v0.1.2 — it runs on any cobra-family player (XT5, XS6, HD6). See the [releases page](https://github.com/brightsign/argus-rtsp-watcher/releases) for other versions.
 
 2. **Copy it to the root of an SD card:**
 
@@ -22,13 +22,28 @@ Want to see it run before building anything? Grab the prebuilt extension, drop i
 
    A player applies a `.bsfw` from the SD-card root automatically on boot.
 
-3. **Insert the card and reboot the player.** On boot it installs the extension and starts the watcher. Point a camera at it (or [test without one](#testing-without-cameras)) by adding a `config.json` at `/storage/sd/configs/config.json` — see [Quick start](#quick-start).
+3. **Insert the card and reboot the player.** On boot it installs the extension and starts the watcher.
 
-4. **Watch the analytics** once a stream is configured:
+4. **Configure your camera(s).** The watcher needs a `config.json` telling it which streams to run — it won't analyze anything until you give it one. Create `/storage/sd/configs/config.json` listing your RTSP sources:
 
-   ```sh
-   mosquitto_sub -h <player-ip> -t 'bs/argus/#' -v
+   ```json
+   {
+     "streams": [
+       { "id": "lobby", "rtsp_url": "rtsp://192.0.2.10:8554/lobby", "target_fps": 10 }
+     ]
+   }
    ```
+
+   The watcher hot-reloads it within a few seconds — no reboot needed to add, remove, or retune cameras. No camera handy? [Test without one](#testing-without-cameras). Full field reference is in [Configuration](#configuration).
+
+5. **See it working.** Two ways:
+
+   - **Browse to the on-player dashboard** at `http://<player-ip>:20300` — it lists your streams, shows each camera's live snapshot, and exposes controls (draw a detection [zone](#zones-regions-of-interest) and save it straight into the live config).
+   - **Watch the analytics over MQTT:**
+
+     ```sh
+     mosquitto_sub -h <player-ip> -t 'bs/argus/#' -v
+     ```
 
 That's it — you're running multi-camera analytics on the NPU. The rest of this README covers [how to use it](#configuration) in depth and [how to build it yourself](#building).
 
