@@ -63,11 +63,11 @@ The design goal: several cameras, one player, no cloud. All inference runs on-de
 
 ### Why it exists
 
-The base Argus extension analyzes **one** camera per player. Many installs have several cameras covering one space but want one player doing the compute. The NPU already has the headroom — three streams at 5–10 fps is the same total inference rate as one stream at 30 fps — so what was missing was a way to run and supervise N pipelines at once. That's this project.
+The base Argus extension analyzes **one** camera per player. Many installs have several cameras covering one space but want one player doing the compute. The NPU already has the headroom — several streams at 5–10 fps fit within the inference budget of one stream at 30 fps, and on an XT5 that stretches to eight — so what was missing was a way to run and supervise N pipelines at once. That's this project.
 
 ## Key features
 
-- **Multiple RTSP streams, one player** — configurable N (validated for 3 on XT5).
+- **Multiple RTSP streams, one player** — configurable N (up to 8 on XT5).
 - **Per-person analytics** — person box, gaze + gaze time, dwell, direction, speed, entry/exit, stable track IDs.
 - **Per-stream MQTT** — `bs/argus/<stream-id>/analytics`, ~1 msg/s. See **[docs/bounding-boxes.md](docs/bounding-boxes.md)** for the box data.
 - **Zones of interest** — draw a per-camera rectangle and each person reports `in_zone` (their feet inside it). Set it with `tools/zone-picker.sh`; see [Zones](#zones-regions-of-interest).
@@ -115,8 +115,8 @@ The **watcher** is a small Go supervisor. It discovers `config.json`, renders on
 
 | Player | SoC | NPU | Streams (person + gaze) |
 |--------|-----|-----|-------------------------|
-| **XT5** | RK3588 | 3-core, 6 TOPS | 3 @ 5–10 fps (primary target) |
-| **XS6/XD6** | RK3576 | 2-core, 4 TOPS | 2–3 @ 5–10 fps (validate) |
+| **XT5** | RK3588 | 3-core, 6 TOPS | 8 @ 5–10 fps (primary target) |
+| **XS6/XD6** | RK3576 | 2-core, 4 TOPS | 4 @ 5–10 fps |
 | **LS5 / HS5** | RK3568 | 1-core, 1 TOPS | 1 stream (multi-stream not supported at target fps) |
 
 Configuring more streams than a tier's capacity is a startup warning, not a failure.
@@ -175,7 +175,8 @@ The single operator-facing file, with three top-level sections — `streams` (re
 | `streams[].usb_fps` | no | USB capture frame rate. Only with `usb: true`; omit for the engine default. |
 | `streams[].target_fps` | no | Default `10`; intended range 5–10. Caps NPU load. |
 | `streams[].confidence` | no | Person-detection threshold, `0.0`–`1.0`. Omit for the engine default (`0.5`). See [Detection confidence](#detection-confidence). |
-| `streams[].zone` | no | Custom "important area" as `[x0,y0,x1,y1]`, normalized 0..1. When set, each track reports `in_zone` (feet inside). Draw it with `tools/zone-picker.html`. |
+| `streams[].zone` | no | Custom "important area" as `[x0,y0,x1,y1]`, normalized 0..1. When set, each track reports `in_zone`. Draw it with the on-player dashboard (`:20300`) or `tools/zone-picker.html`. |
+| `streams[].zone_mode` | no | How a box is tested against the zone: `any` (default) — any part of the box overlapping the zone counts; `base` — only when the box's feet (bottom-centre) are inside. |
 
 *Each stream names exactly one source: `rtsp_url`, `file_path`, or `usb`.
 
@@ -388,7 +389,8 @@ Returns the detected SoC/tier, configured vs. safe stream count, and each stream
 
 Mark a rectangle on a camera and Argus tells you when a person is standing in it. It is additive **labeling, not a gate**: every message is still published; each track simply gains an `in_zone` boolean.
 
-- **Inside rule:** a person's **feet** — their bounding-box bottom-centre — inside the rectangle → `in_zone: true`, otherwise `false`. It's per person, so two people in the same message can differ.
+- **Match mode (`zone_mode`):** `any` (default) — any part of a person's box overlapping the rectangle counts; or `base` — only when their **feet** (bounding-box bottom-centre) are inside. Set per stream.
+- **Inside rule:** a track reports `in_zone: true` when it satisfies the stream's match mode, otherwise `false`. It's per person, so two people in the same message can differ.
 - **Coordinates:** normalized `0..1` fractions of the frame, `[x0, y0, x1, y1]` — resolution-independent.
 - A stream with **no** `zone` emits no `in_zone` field at all.
 

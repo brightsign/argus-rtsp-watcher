@@ -17,7 +17,8 @@ const (
 )
 
 const (
-	multiStreamCapacity  = 3
+	rk3588StreamCapacity = 8
+	rk3576StreamCapacity = 4
 	singleStreamCapacity = 1
 )
 
@@ -63,9 +64,9 @@ func DetectPlayerSoC() SoC { return DetectSoCFromFile(deviceTreeCompatible) }
 func TierFor(soc SoC) Tier {
 	switch soc {
 	case RK3588:
-		return Tier{SoC: RK3588, Model: "XT5", SafeStreams: multiStreamCapacity}
+		return Tier{SoC: RK3588, Model: "XT5", SafeStreams: rk3588StreamCapacity}
 	case RK3576:
-		return Tier{SoC: RK3576, Model: "XS6/XD6", SafeStreams: multiStreamCapacity}
+		return Tier{SoC: RK3576, Model: "XS6/XD6", SafeStreams: rk3576StreamCapacity}
 	case RK3568:
 		return Tier{SoC: RK3568, Model: "LS5/HS5", SafeStreams: singleStreamCapacity}
 	default:

@@ -30,8 +30,8 @@ func TestTierCapacity(t *testing.T) {
 		soc  SoC
 		want int
 	}{
-		{RK3588, 3},
-		{RK3576, 3},
+		{RK3588, 8},
+		{RK3576, 4},
 		{RK3568, 1},
 		{Unknown, 1},
 	}
