@@ -1,6 +1,6 @@
 #!/bin/bash
 ### BEGIN INIT INFO
-# Provides:          bsext-argus-rtsp
+# Provides:          bsext-npu-watch
 # Required-Start:    $remote_fs $syslog
 # Required-Stop:     $remote_fs $syslog
 # Default-Start:     2 3 4 5
@@ -15,7 +15,7 @@
 
 SCRIPT_PATH=$(dirname $(realpath $0))
 
-DAEMON_NAME="bsext-argus-rtsp"
+DAEMON_NAME="bsext-npu-watch"
 PIDFILE="/var/run/${DAEMON_NAME}.pid"
 
 # defaults -- these can be overridden by the registry
@@ -58,12 +58,12 @@ setup_gstreamer_env() {
     # CRITICAL: Bundled plugins MUST come FIRST
     # ext-bundle includes RTSP plugins + libgstcoreelements.so (queue)
     # All plugins are from same GStreamer version for compatibility
-    export GST_PLUGIN_PATH=/var/volatile/bsext/ext_npu_argus_rtsp/$SOC_NAME/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
+    export GST_PLUGIN_PATH=/var/volatile/bsext/ext_npu_watch/$SOC_NAME/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
     export GST_PLUGIN_SYSTEM_PATH=$GST_PLUGIN_PATH
 
     # Include MQTT bin directory first so mosquitto utilities find their libraries
     # Also include bin directory for all other shared libraries
-    export LD_LIBRARY_PATH=/var/volatile/bsext/ext_npu_argus_rtsp/$SOC_NAME/bin:/var/volatile/bsext/ext_npu_argus_rtsp/$SOC_NAME/lib:/usr/lib:$LD_LIBRARY_PATH
+    export LD_LIBRARY_PATH=/var/volatile/bsext/ext_npu_watch/$SOC_NAME/bin:/var/volatile/bsext/ext_npu_watch/$SOC_NAME/lib:/usr/lib:$LD_LIBRARY_PATH
     export GST_REGISTRY="/tmp/gst-registry.bin"
     export GST_PLUGIN_SCANNER="/usr/libexec/gstreamer-1.0/gst-plugin-scanner"
     export GST_REGISTRY_REUSE_PLUGIN_SCANNER=1
@@ -78,7 +78,7 @@ setup_gstreamer_env() {
     echo "  GST_REGISTRY=$GST_REGISTRY"
     echo "  GST_PLUGIN_SCANNER=$GST_PLUGIN_SCANNER"
     echo "  GST_REGISTRY_REUSE_PLUGIN_SCANNER=$GST_REGISTRY_REUSE_PLUGIN_SCANNER"
-    echo "  MQTT utilities available in: /var/volatile/bsext/ext_npu_argus_rtsp/$SOC_NAME/bin/"
+    echo "  MQTT utilities available in: /var/volatile/bsext/ext_npu_watch/$SOC_NAME/bin/"
 }
 
 # Run the watcher supervisor. It owns mosquitto and every per-stream engine
@@ -225,7 +225,7 @@ case "$ACTION" in
         echo "  run       Run the watcher supervisor in foreground"
         echo ""
         echo "Configuration via BrightSign registry:"
-        echo "  bsext-argus-rtsp-disable-auto-start  Disable automatic startup (true/false)"
+        echo "  bsext-npu-watch-disable-auto-start  Disable automatic startup (true/false)"
         echo ""
         echo "The watcher owns mosquitto and every per-stream engine process;"
         echo "this script only starts, stops, and monitors the single watcher"
@@ -239,7 +239,7 @@ case "$ACTION" in
         echo "  mosquitto_pub -h 127.0.0.1 -p 1883 -t 'test/topic' -m 'message'"
         echo ""
         echo "  # To view current settings:"
-        echo "  registry read extension bsext-argus-rtsp-disable-auto-start"
+        echo "  registry read extension bsext-npu-watch-disable-auto-start"
         exit 1
         ;;
 esac

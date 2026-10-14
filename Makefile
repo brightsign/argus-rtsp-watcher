@@ -46,7 +46,7 @@ export BS_CACHE_DIR
 # has no dependency on a sibling argus install tree.
 SOC_LIST := RK3588 RK3576 RK3568
 STAGING_DIR := staging
-EXT_NAME := npu_argus_rtsp
+EXT_NAME := npu_watch
 BUILD_TS := $(shell date +%s)
 DEV_ZIP := argus-rtsp-watcher-$(BUILD_TS).zip
 EXT_ZIP := argus-rtsp-watcher-ext-$(BUILD_TS).zip

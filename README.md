@@ -2,6 +2,36 @@
 
 Run real-time person and gaze analytics on **multiple RTSP camera feeds** from a single NPU-equipped BrightSign player.
 
+## Try it Now!
+
+Want to see it run before building anything? Grab the prebuilt extension, drop it on an SD card, and reboot the player — no toolchain, no cross-compile, no cache setup.
+
+1. **Download the prebuilt extension** (`.bsfw`):
+
+   ```sh
+   curl -L -O https://github.com/brightsign/argus-rtsp-watcher/releases/download/v0.1.2/cobra-standalone-npu_watch-0.1.2.bsfw
+   ```
+
+   This is the **XT5 (RK3588)** standalone build, v0.1.2. See the [releases page](https://github.com/brightsign/argus-rtsp-watcher/releases) for other versions.
+
+2. **Copy it to the root of an SD card:**
+
+   ```sh
+   cp cobra-standalone-npu_watch-0.1.2.bsfw /media/<you>/<SD-CARD>/
+   ```
+
+   A player applies a `.bsfw` from the SD-card root automatically on boot.
+
+3. **Insert the card and reboot the player.** On boot it installs the extension and starts the watcher. Point a camera at it (or [test without one](#testing-without-cameras)) by adding a `config.json` at `/storage/sd/configs/config.json` — see [Quick start](#quick-start).
+
+4. **Watch the analytics** once a stream is configured:
+
+   ```sh
+   mosquitto_sub -h <player-ip> -t 'bs/argus/#' -v
+   ```
+
+That's it — you're running multi-camera analytics on the NPU. The rest of this README covers [how to use it](#configuration) in depth and [how to build it yourself](#building).
+
 > **Building this? Read [docs/PRE-REQS.md](docs/PRE-REQS.md) first.** The cross-compile
 > SDK, RKNN toolkit, and compiled models come from a **shared build cache outside the
 > repo** (`BS_CACHE_DIR`, default `../argus-build-cache`), provisioned once per box and
@@ -503,13 +533,13 @@ sh /storage/sd/install-on-player.sh
 ```
 
 The helper runs the manual steps for you — `cd /usr/local`, `unzip` this build's zip,
-`bash ./ext_npu_argus_rtsp_install-lvm.sh` — then prunes older
+`bash ./ext_npu_watch_install-lvm.sh` — then prunes older
 `argus-rtsp-watcher-ext-*.zip` files from `/storage/sd` (keeping only the one it just
 installed). **On success it reboots the player automatically; on failure it leaves you
 in the shell** (no reboot) so you can inspect the error. (Equivalent manual form if you prefer:
-`cd /usr/local && unzip -o /storage/sd/argus-rtsp-watcher-ext-<ts>.zip && bash ./ext_npu_argus_rtsp_install-lvm.sh`.)
+`cd /usr/local && unzip -o /storage/sd/argus-rtsp-watcher-ext-<ts>.zip && bash ./ext_npu_watch_install-lvm.sh`.)
 
-Extension lifecycle on the player (root shell): `/var/volatile/bsext/ext_npu_argus_rtsp/bsext_init {start|stop|restart|status}`. The watcher owns mosquitto and all engine + preview processes; `bsext_init` only manages the single watcher. See **[docs/HARDWARE-VALIDATION.md](docs/HARDWARE-VALIDATION.md)** for the on-device checklist.
+Extension lifecycle on the player (root shell): `/var/volatile/bsext/ext_npu_watch/bsext_init {start|stop|restart|status}`. The watcher owns mosquitto and all engine + preview processes; `bsext_init` only manages the single watcher. See **[docs/HARDWARE-VALIDATION.md](docs/HARDWARE-VALIDATION.md)** for the on-device checklist.
 
 ## Project structure
 

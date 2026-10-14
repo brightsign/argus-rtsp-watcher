@@ -179,8 +179,8 @@ dependencies — `prep` (RKNN headers), `fetch-sdk`, `build-engine`,
 bin,lib,model}` and produces two zips in the repo root:
 
 - `argus-rtsp-watcher-<ts>.zip` — dev bundle (whole staging tree).
-- `argus-rtsp-watcher-ext-<ts>.zip` — production: `ext_npu_argus_rtsp.squashfs`
-  + `ext_npu_argus_rtsp_install-lvm.sh`.
+- `argus-rtsp-watcher-ext-<ts>.zip` — production: `ext_npu_watch.squashfs`
+  + `ext_npu_watch_install-lvm.sh`.
 
 Build one SoC at a time with e.g. `make build-engine TARGET_SOC=rk3576`.
 

@@ -7,18 +7,17 @@ set -e
 # directory that directly contains bsext_init and the per-SoC directories) --
 # scripts/build.sh invokes it that way via `make package`.
 
-name="${EXT_NAME:-npu_argus_rtsp}"
+name="${EXT_NAME:-npu_watch}"
 mapper_vol_name=ext_${name}
 tmp_vol_name=tmp_${name}
 mount_name=ext_${name}
 
 workdir=../extension-${name}-temp/
 
-# The upstream script bounded this at 13 chars ({2,12} after the first char),
-# which fits "npu_argus" but not "npu_argus_rtsp" (14 chars). LVM logical
-# volume names allow up to 127 chars, so this check only needs to keep the
-# name filesystem/LVM-safe (lowercase alnum + underscore), not artificially
-# short; widened to {2,32}.
+# The upstream script bounded this at 13 chars ({2,12} after the first char).
+# LVM logical volume names allow up to 127 chars, so this check only needs to
+# keep the name filesystem/LVM-safe (lowercase alnum + underscore), not
+# artificially short; widened to {2,32}.
 if ! echo "${name}" | egrep -q '^[a-z][a-z0-9_]{2,32}$'; then
     echo "Error: Invalid extension name specified" 1>&2
     exit 1

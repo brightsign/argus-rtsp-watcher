@@ -255,7 +255,7 @@ mosquitto_sub -h <player-ip> -t 'bs/argus/lobby/analytics' \
   | jq -c '.tracks[] | {id, bbox, gaze: .gaze.face_bbox, looking: .gaze.detected}'
 ```
 
-The `mosquitto_sub`/`mosquitto_pub` binaries are also bundled in the extension at `/var/volatile/bsext/ext_npu_argus_rtsp/<SOC>/bin/`.
+The `mosquitto_sub`/`mosquitto_pub` binaries are also bundled in the extension at `/var/volatile/bsext/ext_npu_watch/<SOC>/bin/`.
 
 ### Python (paho-mqtt)
 

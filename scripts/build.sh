@@ -46,7 +46,7 @@ LIBS_DIR="${LIBS_DIR:-${REPO_ROOT}/build/libs}"
 MODELS_DIR="${MODELS_DIR:-${REPO_ROOT}/build/models}"
 # Optional on-player RTSPS proxy (build-mediamtx); SoC-independent aarch64 binary.
 MEDIAMTX_DIR="${MEDIAMTX_DIR:-${REPO_ROOT}/build/mediamtx}"
-EXT_NAME="${EXT_NAME:-npu_argus_rtsp}"
+EXT_NAME="${EXT_NAME:-npu_watch}"
 BUILD_TS="${BUILD_TS:-$(date +%s)}"
 DEV_ZIP="${DEV_ZIP:-argus-rtsp-watcher-${BUILD_TS}.zip}"
 EXT_ZIP="${EXT_ZIP:-argus-rtsp-watcher-ext-${BUILD_TS}.zip}"
