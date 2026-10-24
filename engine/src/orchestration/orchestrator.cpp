@@ -347,7 +347,7 @@ bool Orchestrator::build_pipeline() noexcept {
   // Create and start publishers from configuration
   if (!cfg_.publishers.empty()) {
     LG_INFO("[orch] Creating %zu publisher(s) from configuration\n", cfg_.publishers.size());
-    auto pubs = make_async_publishers(cfg_.publishers, 64, device_id_, stream_id_, cfg_.zone);
+    auto pubs = make_async_publishers(cfg_.publishers, 64, device_id_, stream_id_, cfg_.zone, cfg_.light);
     for (auto& p : pubs) {
       if (p && p->start()) {
         publishers_.push_back(std::move(p));
