@@ -180,3 +180,63 @@ TEST(LightAnalyzer, FirstCommitRecordsChangeTimestamp) {
     EXPECT_EQ(state.state, LightLevelState::Light);
     EXPECT_EQ(state.last_change_ms, warmup_end_ms);
 }
+
+TEST(LightAnalyzer, IrExitIntoDeadBandHoldsDarkInColourMode) {
+    LightAnalyzer analyzer(fast_cfg());
+    int64_t now_ms = feed(analyzer, make_bgr(kFrameWidth, kFrameHeight, 200, 200, 200), 0, 10);
+    ASSERT_EQ(analyzer.snapshot().state, LightLevelState::Dark);
+    ASSERT_TRUE(analyzer.snapshot().ir_mode);
+
+    // Chroma 50 (recovered), luma between dark_luma (40) and light_luma (70).
+    const float middling_luma = luma_of(30, 60, 80);
+    ASSERT_GT(middling_luma, 40.0f);
+    ASSERT_LT(middling_luma, 70.0f);
+    feed(analyzer, make_bgr(kFrameWidth, kFrameHeight, 30, 60, 80), now_ms, 30);
+
+    const LightState state = analyzer.snapshot();
+    EXPECT_EQ(state.state, LightLevelState::Dark);
+    EXPECT_FALSE(state.ir_mode);
+    EXPECT_GT(state.level, 0);
+}
+
+TEST(LightAnalyzer, ZeroStrideIsClampedAndSamples) {
+    LightCfg cfg = fast_cfg();
+    cfg.sample_stride = 0;
+    LightAnalyzer analyzer(cfg);
+    analyzer.update(make_bgr(kFrameWidth, kFrameHeight, 60, 160, 200), 0);
+    EXPECT_NEAR(analyzer.snapshot().luma, luma_of(60, 160, 200), 1.0f);
+}
+
+TEST(LightAnalyzer, ZeroRoiFractionIsClampedAndSamples) {
+    LightCfg cfg = fast_cfg();
+    cfg.roi_frac = 0.0f;
+    LightAnalyzer analyzer(cfg);
+    analyzer.update(make_bgr(kFrameWidth, kFrameHeight, 60, 160, 200), 0);
+    EXPECT_NEAR(analyzer.snapshot().luma, luma_of(60, 160, 200), 1.0f);
+}
+
+TEST(LightAnalyzer, OversizedRoiFractionIsClampedAndSamples) {
+    LightCfg cfg = fast_cfg();
+    cfg.roi_frac = 5.0f;
+    LightAnalyzer analyzer(cfg);
+    analyzer.update(make_bgr(kFrameWidth, kFrameHeight, 60, 160, 200), 0);
+    EXPECT_NEAR(analyzer.snapshot().luma, luma_of(60, 160, 200), 1.0f);
+}
+
+TEST(LightAnalyzer, NanRoiFractionAndOutOfRangeAlphaAreSafe) {
+    LightCfg cfg;
+    cfg.roi_frac = std::nanf("");
+    cfg.ema_alpha = 7.0f;
+    LightAnalyzer analyzer(cfg);
+    analyzer.update(make_bgr(kFrameWidth, kFrameHeight, 60, 160, 200), 0);
+    EXPECT_NEAR(analyzer.snapshot().luma, luma_of(60, 160, 200), 1.0f);
+}
+
+TEST(LightAnalyzer, ZeroWidthFrameIsSafe) {
+    LightAnalyzer analyzer(fast_cfg());
+    SharedFrame frame = make_bgr(kFrameWidth, kFrameHeight, 60, 160, 200);
+    frame.width = 0;
+    analyzer.update(frame, 0);
+    analyzer.update(frame, 100 * kMillisPerSecond);
+    EXPECT_EQ(analyzer.snapshot().state, LightLevelState::Unknown);
+}

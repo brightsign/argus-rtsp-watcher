@@ -33,7 +33,9 @@ Measurement measure(const SharedFrame& sf, float roi_frac, int minimum_stride) {
     const int derived_stride = static_cast<int>(std::lround(std::sqrt(roi_pixels / kTargetSampleCount)));
     const int stride = std::max(minimum_stride, std::max(1, derived_stride));
 
-    // 64-bit sums: at 1080p a 32-bit accumulator could overflow.
+    // 64-bit sums are a defensive guard against integer overflow (CWE-190) should
+    // the sample count or per-sample weights ever grow; the current ~2048-sample
+    // budget would fit in 32 bits.
     uint64_t luma_sum = 0;
     uint64_t chroma_sum = 0;
     uint64_t sample_count = 0;
@@ -60,7 +62,15 @@ Measurement measure(const SharedFrame& sf, float roi_frac, int minimum_stride) {
 
 LightAnalyzer::LightAnalyzer(LightCfg cfg) noexcept : cfg_(cfg) {
     cfg_.sample_stride = std::max(1, cfg_.sample_stride);
-    cfg_.roi_frac = std::clamp(cfg_.roi_frac, kMinimumRoiFraction, 1.0f);
+    // NaN fails every comparison, so test with the negated form before std::clamp,
+    // which is undefined for NaN.
+    if (!(cfg_.roi_frac >= kMinimumRoiFraction)) {
+        cfg_.roi_frac = std::isnan(cfg_.roi_frac) ? LightCfg{}.roi_frac : kMinimumRoiFraction;
+    }
+    cfg_.roi_frac = std::min(cfg_.roi_frac, 1.0f);
+    if (!(cfg_.ema_alpha > 0.f && cfg_.ema_alpha <= 1.f)) {
+        cfg_.ema_alpha = LightCfg{}.ema_alpha;
+    }
 }
 
 void LightAnalyzer::update(const SharedFrame& sf, int64_t now_ms) noexcept {
@@ -115,7 +125,7 @@ void LightAnalyzer::update(const SharedFrame& sf, int64_t now_ms) noexcept {
     if (current_.state == LightLevelState::Unknown || current_.ir_mode) {
         current_.level = 0;
     } else {
-        const long level = std::lround(100.0 * ema_luma_ / kMaxChannelValue);
+        const long level = std::lround(kMaxLevel * ema_luma_ / kMaxChannelValue);
         current_.level = static_cast<int>(std::clamp<long>(level, 0, kMaxLevel));
     }
 }
