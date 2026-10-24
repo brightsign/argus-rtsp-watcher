@@ -20,6 +20,7 @@
 #include "output/publisher_v2.h"
 #include "orchestration/zone.h"
 #include "tracking/tracker.h"
+#include "analysis/light_analyzer.h"
 
 // Optional: describe how to build the pipeline
 struct PipelineConfig {
@@ -32,6 +33,7 @@ struct PipelineConfig {
   std::string device_id;       // Device identifier for MQTT (empty = auto-detect from MAC)
 
   zone::ZoneCfg zone;   // custom detection zone (normalized 0..1)
+  LightCfg light;       // light/dark scene detection
 
   int heartbeat_timeout_ms{1500}; // if worker misses heartbeats -> restart
 
@@ -129,6 +131,9 @@ private:
   // Only the YOLOX worker draws (it has both face and person detections via
   // fusion_); the face worker does not get its own writer.
   std::unique_ptr<IFrameWriter> frame_writer_yolo_;
+
+  // Null when light detection is disabled; always null-check before use.
+  std::unique_ptr<LightAnalyzer> light_analyzer_;
 
   // ---- Frame fan-out mailboxes (lock-free) ----
   FrameMailbox mb_face_;   // For RetinaFace worker
