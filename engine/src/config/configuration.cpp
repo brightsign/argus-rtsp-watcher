@@ -165,6 +165,32 @@ bool load_from_file(const std::string& path, AppConfig& out, bool /*strict*/, ch
       }
     }
 
+    // Optional light/dark detection config; absent keys keep LightCfg defaults.
+    if (j.contains("light") && j["light"].is_object()) {
+      const auto& l = j["light"];
+      const auto read_bool = [&l](const char* key, bool& target) {
+        if (l.contains(key) && l[key].is_boolean()) target = l[key].get<bool>();
+      };
+      const auto read_int = [&l](const char* key, int& target) {
+        if (l.contains(key) && l[key].is_number()) target = l[key].get<int>();
+      };
+      const auto read_float = [&l](const char* key, float& target) {
+        if (l.contains(key) && l[key].is_number()) target = l[key].get<float>();
+      };
+      read_bool("enabled", out.light.enabled);
+      read_int("interval_seconds", out.light.interval_seconds);
+      read_bool("on_change", out.light.on_change);
+      read_float("dark_luma", out.light.dark_luma);
+      read_float("light_luma", out.light.light_luma);
+      read_float("chroma_threshold", out.light.chroma_threshold);
+      read_float("ema_alpha", out.light.ema_alpha);
+      read_int("min_dwell_seconds", out.light.min_dwell_seconds);
+      read_int("warmup_seconds", out.light.warmup_seconds);
+      read_float("roi_frac", out.light.roi_frac);
+      read_int("sample_stride", out.light.sample_stride);
+      read_bool("monochrome_camera", out.light.monochrome_camera);
+    }
+
     // Parse explicit input source selection (new field)
     if (j.contains("input_source") && j["input_source"].is_string()) {
       out.input_source = j["input_source"].get<std::string>();

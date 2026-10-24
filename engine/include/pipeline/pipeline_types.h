@@ -7,6 +7,7 @@
 #include <memory>
 #include "models/model_runner.h"
 #include "tracking/tracker.h"  // For TrackedBox complete definition
+#include "analysis/light_state.h"
 
 // Reuse your Resource and Model types where included
 enum class PixFmt : uint8_t { NV12, RGB24, BGR24, GRAY8 };
@@ -76,6 +77,8 @@ struct PipelineResult {
   int fps{0};               // Actual frame processing rate
   int frame_width{0};       // V6.2: Frame width for normalized speed
   int frame_height{0};      // V6.2: Frame height for normalized speed
+  LightState light{};       // Latest light/dark measurement (valid when light_enabled)
+  bool light_enabled{false}; // Publishers omit light fields when detection is off
   
   // Ensure proper default construction/destruction
   PipelineResult() = default;

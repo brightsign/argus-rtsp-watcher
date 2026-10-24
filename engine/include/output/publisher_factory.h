@@ -14,7 +14,8 @@
 inline PublisherPtr make_publisher(const PublisherConfig& cfg,
                                   const std::string& device_id = "xt5-01",
                                   const std::string& stream_id = "/dev/video1",
-                                  const zone::ZoneCfg& zone = {}) {
+                                  const zone::ZoneCfg& zone = {},
+                                  const LightCfg& light = {}) {
   switch (cfg.kind) {
     case PublisherKind::Mqtt: {
       MqttPublisher::Cfg mc{};
@@ -31,6 +32,7 @@ inline PublisherPtr make_publisher(const PublisherConfig& cfg,
       mc.device_id    = device_id;  // Set device identifier
       mc.stream_id    = stream_id;  // Set stream identifier
       mc.zone         = zone;
+      mc.light        = light;
       return std::make_unique<MqttPublisher>(mc);
     }
     
@@ -48,11 +50,12 @@ inline std::vector<PublisherPtr> make_async_publishers(const std::vector<Publish
                                                        size_t queue_capacity = 64,
                                                        const std::string& device_id = "xt5-01",
                                                        const std::string& stream_id = "/dev/video1",
-                                                       const zone::ZoneCfg& zone = {}) {
+                                                       const zone::ZoneCfg& zone = {},
+                                                       const LightCfg& light = {}) {
   std::vector<PublisherPtr> out;
   out.reserve(cfgs.size());
   for (const auto& c : cfgs) {
-    if (auto p = make_publisher(c, device_id, stream_id, zone)) {
+    if (auto p = make_publisher(c, device_id, stream_id, zone, light)) {
       auto ap = std::make_unique<AsyncPublisher>(std::move(p), AsyncPublisher::Config{queue_capacity});
       out.emplace_back(std::move(ap));
     }

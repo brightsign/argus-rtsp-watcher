@@ -324,6 +324,7 @@ int main(int argc, char** argv) {
     pc.zone.y0 = appcfg.zone.y0;
     pc.zone.x1 = appcfg.zone.x1;
     pc.zone.y1 = appcfg.zone.y1;
+    pc.light = appcfg.light;
 
     // Configure face/person blur for privacy in output frames
     pc.blur_config.enabled = appcfg.blur_faces;

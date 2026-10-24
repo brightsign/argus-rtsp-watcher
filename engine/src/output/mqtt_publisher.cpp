@@ -1,6 +1,7 @@
 #include "output/mqtt_publisher.h"
 #include "metrics/log_global.h"
 #include "orchestration/zone.h"
+#include "analysis/light_json.h"
 #include <chrono>
 #include <cmath>   // For std::sqrt
 #include <cstdio>
@@ -133,6 +134,18 @@ bool MqttPublisher::start() noexcept {
     }
   }
 
+  // Derive the retained light/dark state topic as a sibling of the analytics
+  // topic, mirroring the zone_event derivation above.
+  {
+    const std::string suffix = "/analytics";
+    if (cfg_.topic.size() >= suffix.size() &&
+        cfg_.topic.compare(cfg_.topic.size() - suffix.size(), suffix.size(), suffix) == 0) {
+      light_topic_ = cfg_.topic.substr(0, cfg_.topic.size() - suffix.size()) + "/light";
+    } else {
+      light_topic_ = cfg_.topic + "/light";
+    }
+  }
+
   run_.store(true, std::memory_order_release);
   tick_ = std::thread([this]{
     const int period = std::max(100, cfg_.period_ms);
@@ -163,6 +176,8 @@ bool MqttPublisher::publish_result(const PipelineResult& r) noexcept {
   bool fire = false;
   int in_zone_count = 0;
   int64_t now_ms = 0;
+  bool fire_light = false;
+  LightState light_to_publish{};
   {
     std::lock_guard<std::mutex> lk(m_);
     // Collect people_count (YOLOX) and gaze_count (RetinaFace)
@@ -189,9 +204,28 @@ bool MqttPublisher::publish_result(const PipelineResult& r) noexcept {
     now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                  clk::now().time_since_epoch()).count();
     fire = detect_zone_event_locked(now_ms, in_zone_count);
+
+    // Store the latest light measurement for the periodic tick and decide the
+    // on-change publish here; the mosquitto call happens after releasing m_.
+    light_ = r.light;
+    light_enabled_ = r.light_enabled;
+    if (cfg_.light.enabled && cfg_.light.on_change) {
+      const bool first = !last_light_valid_;
+      if ((first && r.light.state != LightLevelState::Unknown) ||
+          (!first && light_changed(last_light_, r.light))) {
+        fire_light = true;
+        light_to_publish = r.light;
+        last_light_ = r.light;
+        last_light_valid_ = true;
+        last_light_pub_ms_ = now_ms;
+      }
+    }
   }
   if (fire) {
     publish_zone_event(in_zone_count, now_ms);
+  }
+  if (fire_light) {
+    publish_light(light_to_publish, "change", now_ms);
   }
   return true;
 }
@@ -281,7 +315,7 @@ std::string MqttPublisher::make_payload_locked() const {
   // V7.0: Full schema with metadata + employee scene counts
   char header[1024];
   std::snprintf(header, sizeof(header),
-    "{\"schema\":\"analytics/v7.0\","
+    "{\"schema\":\"analytics/v7.1\","
     "\"ts\":%.2f,\"device\":\"%s\",\"stream\":\"%s\","
     "\"frame_seq\":%llu,\"frame_ts\":%lld,"
     "\"frame_w\":%d,\"frame_h\":%d,"
@@ -292,8 +326,7 @@ std::string MqttPublisher::make_payload_locked() const {
     "\"scene\":{\"person_count\":%d,\"employee_count\":%d,"
                "\"customer_count\":%d,\"unknown_uniform_count\":%d},"
     "\"roi\":{\"type\":\"border\",\"border_frac\":0.30,\"rect\":[%d,%d,%d,%d]},"
-    "\"health\":{\"detector_fps\":%.1f,\"tracker_fps\":%.1f,\"queue_latency_ms\":0,\"dropped_frames\":%d,\"last_model_reload_ts\":%.1f},"
-    "\"tracks\":[",
+    "\"health\":{\"detector_fps\":%.1f,\"tracker_fps\":%.1f,\"queue_latency_ms\":0,\"dropped_frames\":%d,\"last_model_reload_ts\":%.1f},",
     ts_s,
     cfg_.device_id.c_str(),
     cfg_.stream_id.c_str(),
@@ -311,8 +344,17 @@ std::string MqttPublisher::make_payload_locked() const {
     int(frame_width_ * 0.70f), int(frame_height_ * 0.70f),
     detector_fps_, tracker_fps_, dropped_frames_, last_model_reload_ts_);
   payload_buffer_ += header;
-  
-  // Add each track with v7.0 fields
+
+  // Additive scene-level light/dark summary; omitted entirely when detection is
+  // off so disabled streams keep the prior message shape.
+  if (light_enabled_) {
+    payload_buffer_ += "\"light\":";
+    payload_buffer_ += light_scene_json(light_);
+    payload_buffer_ += ",";
+  }
+  payload_buffer_ += "\"tracks\":[";
+
+  // Add each track with v7.1 fields
   for (size_t i = 0; i < tracks_.size(); ++i) {
     const auto& t = tracks_[i];
     
@@ -344,6 +386,15 @@ std::string MqttPublisher::make_payload_locked() const {
           cfg_.zone.x0, cfg_.zone.y0, cfg_.zone.x1, cfg_.zone.y1);
       std::snprintf(in_zone_field, sizeof(in_zone_field),
                     "\"in_zone\":%s,", is_in_zone ? "true" : "false");
+    }
+
+    // Per-track ambient light/dark label; additive and omitted when detection
+    // is off. Carries the scene state so consumers can key off either level.
+    char light_field[32];
+    light_field[0] = '\0';
+    if (light_enabled_) {
+      std::snprintf(light_field, sizeof(light_field),
+                    "\"light\":\"%s\",", light_state_str(light_.state));
     }
 
     // V7.1b: Strict publisher gate with resolution-adaptive threshold
@@ -381,7 +432,7 @@ std::string MqttPublisher::make_payload_locked() const {
       std::snprintf(buf, sizeof(buf),
         "{\"id\":%d,\"state\":\"Confirmed\","
         "\"bbox\":[%.1f,%.1f,%.1f,%.1f],\"score\":%.2f,"
-        "\"zones\":%s,%s"
+        "\"zones\":%s,%s%s"
         "\"dir\":\"%s\",\"deg\":%.1f,\"dir_conf\":%.2f,"
         "\"speed\":%.1f,\"speed_norm\":%.3f,"
         "\"dwell\":%.2f,\"enter\":%s,\"exit\":%s,"
@@ -389,7 +440,7 @@ std::string MqttPublisher::make_payload_locked() const {
         "\"gaze\":{\"detected\":%d,\"time\":%.2f,\"face_bbox\":[%.1f,%.1f,%.1f,%.1f]}}",
         t.id,
         t.x0, t.y0, t.x1, t.y1, t.score,
-        zones_str, in_zone_field,
+        zones_str, in_zone_field, light_field,
         pub_dir, pub_deg, pub_conf,
         pub_speed, speed_norm,
         t.dwell_s,
@@ -409,14 +460,14 @@ std::string MqttPublisher::make_payload_locked() const {
       std::snprintf(buf, sizeof(buf),
         "{\"id\":%d,\"state\":\"Confirmed\","
         "\"bbox\":[%.1f,%.1f,%.1f,%.1f],\"score\":%.2f,"
-        "\"zones\":%s,%s"
+        "\"zones\":%s,%s%s"
         "\"dir\":\"%s\",\"deg\":%.1f,\"dir_conf\":%.2f,"
         "\"speed\":%.1f,\"speed_norm\":%.3f,"
         "\"dwell\":%.2f,\"enter\":%s,\"exit\":%s,"
         "\"uniform\":{\"class\":\"%s\",\"confidence\":%.3f,\"is_employee\":%s}}",
         t.id,
         t.x0, t.y0, t.x1, t.y1, t.score,
-        zones_str, in_zone_field,
+        zones_str, in_zone_field, light_field,
         pub_dir, pub_deg, pub_conf,
         pub_speed, speed_norm,
         t.dwell_s,
@@ -436,16 +487,60 @@ std::string MqttPublisher::make_payload_locked() const {
 void MqttPublisher::tick_publish() noexcept {
   if (!mq_) return;
   std::string payload;
+  bool fire_light = false;
+  LightState light_to_publish{};
+  int64_t now_ms = 0;
   {
     std::lock_guard<std::mutex> lk(m_);
     payload = make_payload_locked();
     // Don't reset frames_accum_ here anymore - it holds the actual FPS
+
+    // Periodic light/dark heartbeat on its own cadence; decided under the lock,
+    // published after release to avoid holding m_ across mosquitto_publish.
+    if (cfg_.light.enabled) {
+      now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                   clk::now().time_since_epoch()).count();
+      const int64_t interval_ms =
+          static_cast<int64_t>(cfg_.light.interval_seconds) * 1000;
+      // Stay silent during warmup: the on-change path never emits UNKNOWN, and a
+      // retained UNKNOWN would mask the real state for late subscribers.
+      if (light_.state != LightLevelState::Unknown &&
+          now_ms - last_light_pub_ms_ >= interval_ms) {
+        fire_light = true;
+        light_to_publish = light_;
+        last_light_ = light_;
+        last_light_valid_ = true;
+        last_light_pub_ms_ = now_ms;
+      }
+    }
   }
   const int rc = mosquitto_publish(mq_, nullptr, cfg_.topic.c_str(),
                                    int(payload.size()), payload.data(),
                                    cfg_.qos, cfg_.retain);
   if (rc != MOSQ_ERR_SUCCESS) {
     LG_WARN("mqtt: publish failed rc=%d", rc);
+  }
+  if (fire_light) {
+    publish_light(light_to_publish, "periodic", now_ms);
+  }
+}
+
+// publish_light emits one retained light/dark message on light_topic_. qos=1 and
+// retain=true are deliberate for this state topic: a late subscriber must be
+// able to read the current state without waiting for the next change or tick.
+void MqttPublisher::publish_light(const LightState& s, const char* event,
+                                  int64_t /*steady_now_ms*/) noexcept {
+  if (!mq_ || light_topic_.empty()) return;
+  // Payload ts_ms is wall-clock epoch ms (spec 7.1); the steady clock is only
+  // valid for interval arithmetic, not for consumers.
+  const int64_t wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  const std::string payload = light_topic_json(cfg_.device_id, s, event, wall_ms);
+  const int rc = mosquitto_publish(mq_, nullptr, light_topic_.c_str(),
+                                   int(payload.size()), payload.data(),
+                                   /*qos=*/1, /*retain=*/true);
+  if (rc != MOSQ_ERR_SUCCESS) {
+    LG_WARN("mqtt: light publish failed rc=%d", rc);
   }
 }
 

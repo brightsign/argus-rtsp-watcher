@@ -340,10 +340,14 @@ bool Orchestrator::build_pipeline() noexcept {
     stream_id_ = cfg_.input.file_path;
   }
   
+  if (cfg_.light.enabled) {
+    light_analyzer_ = std::make_unique<LightAnalyzer>(cfg_.light);
+  }
+
   // Create and start publishers from configuration
   if (!cfg_.publishers.empty()) {
     LG_INFO("[orch] Creating %zu publisher(s) from configuration\n", cfg_.publishers.size());
-    auto pubs = make_async_publishers(cfg_.publishers, 64, device_id_, stream_id_, cfg_.zone);
+    auto pubs = make_async_publishers(cfg_.publishers, 64, device_id_, stream_id_, cfg_.zone, cfg_.light);
     for (auto& p : pubs) {
       if (p && p->start()) {
         publishers_.push_back(std::move(p));
@@ -378,6 +382,7 @@ void Orchestrator::destroy_pipeline() noexcept {
     frame_writer_yolo_->flush();
     frame_writer_yolo_.reset();
   }
+  light_analyzer_.reset();
 
   // Stop and clear publishers
   for (auto& pub : publishers_) {
@@ -799,6 +804,8 @@ void Orchestrator::supervisor_loop() noexcept {
         result.fps = calculated_fps;
         result.frame_width = fusion_.frame_width;   // V6.2: For normalized speed
         result.frame_height = fusion_.frame_height; // V6.2: For normalized speed
+        result.light_enabled = cfg_.light.enabled;
+        result.light = light_analyzer_ ? light_analyzer_->snapshot() : LightState{};
       }
       
       // Update person tracker with YOLOX detections (outside lock)
@@ -1336,6 +1343,11 @@ void Orchestrator::capture_loop_threadfn() noexcept {
         sf->bgr.resize(static_cast<size_t>(sf->width * sf->height * 3));
         if (camView.plane0) {
             std::memcpy(sf->bgr.data(), camView.plane0, sf->bgr.size());
+        }
+
+        // Wall-clock ms matches the frame_ts domain already published to consumers.
+        if (light_analyzer_) {
+            light_analyzer_->update(*sf, sf->capture_wall_ns / 1000000LL);
         }
 
         // Fan out to enabled model mailboxes (lock-free post)

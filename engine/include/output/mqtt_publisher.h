@@ -2,7 +2,10 @@
 #include "output/publisher_v2.h"
 #include "orchestration/zone.h"
 #include "tracking/tracker.h"  // For TrackedBox
+#include "analysis/light_config.h"
+#include "analysis/light_state.h"
 #include <mosquitto.h>
+#include <cstdint>
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -26,6 +29,10 @@ struct MqttPublisherCfg {
   // Custom detection zone (normalized 0..1); when enabled, each track gets an
   // additive "in_zone" boolean computed from its feet.
   zone::ZoneCfg zone;
+
+  // Ambient light/dark detection; when enabled the publisher emits a scene
+  // object plus per-track field in analytics and a retained sibling topic.
+  LightCfg light;
 };
 
 class MqttPublisher final : public IPublisher {
@@ -52,7 +59,12 @@ private:
   // count) when an event should be published, rate-limited to ZONE_EVENT_REPEAT_MS.
   bool detect_zone_event_locked(int64_t now_ms, int& in_zone_count) noexcept;
   void publish_zone_event(int in_zone_count, int64_t now_ms) noexcept;
-  
+
+  // Publishes one retained light/dark message on light_topic_. qos=1 and
+  // retain=true keep the latest state available to late subscribers. event is
+  // the literal "change" or "periodic". Called after releasing m_.
+  void publish_light(const LightState& s, const char* event, int64_t now_ms) noexcept;
+
   // Phase 2: Connection management
   bool reconnect_if_needed() noexcept;
   bool is_connected() const noexcept;
@@ -77,6 +89,17 @@ private:
   // window defaults (1s lookback, 2 hits, 500ms repeat) live in zone::EventWindow.
   zone::EventWindow zone_window_;
   std::string zone_event_topic_;      // sibling of cfg_.topic (".../zone_event")
+
+  // Light/dark state, guarded by m_. light_topic_ is a sibling of cfg_.topic
+  // (".../light"). last_light_ tracks the last published state for the on-change
+  // and periodic cadence; last_light_pub_ms_ is the steady-clock ms of the last
+  // light publish on either path.
+  std::string light_topic_;
+  LightState  light_{};
+  bool        light_enabled_{false};
+  LightState  last_light_{};
+  bool        last_light_valid_{false};
+  int64_t     last_light_pub_ms_{0};
 
   // V7.0: Enhanced telemetry
   float    detector_fps_{0.0f};

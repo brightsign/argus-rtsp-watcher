@@ -256,3 +256,68 @@ func TestRenderConfidence(t *testing.T) {
 		t.Errorf("yolox conf_threshold = %v, want 0.7", yolox)
 	}
 }
+
+func renderLightObject(t *testing.T, s config.Stream) map[string]any {
+	t.Helper()
+	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	out, err := Render(s, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	light, ok := m["light"].(map[string]any)
+	if !ok {
+		t.Fatalf("light missing or not an object: %v", m["light"])
+	}
+	return light
+}
+
+func assertLight(t *testing.T, light map[string]any, want map[string]any) {
+	t.Helper()
+	if len(light) != len(want) {
+		t.Errorf("light has %d fields, want %d: %v", len(light), len(want), light)
+	}
+	for k, w := range want {
+		if light[k] != w {
+			t.Errorf("light.%s = %v (%T), want %v", k, light[k], light[k], w)
+		}
+	}
+}
+
+func TestRenderLightDefaults(t *testing.T) {
+	light := renderLightObject(t, config.Stream{ID: "cam1", RTSPURL: "rtsp://h/live", TargetFPS: 10})
+	assertLight(t, light, map[string]any{
+		"enabled": true, "interval_seconds": 10.0, "on_change": true,
+		"dark_luma": 40.0, "light_luma": 70.0, "chroma_threshold": 10.0,
+		"ema_alpha": 0.1, "min_dwell_seconds": 5.0, "warmup_seconds": 3.0,
+		"roi_frac": 0.6, "sample_stride": 8.0, "monochrome_camera": false,
+	})
+}
+
+func TestRenderLightOverrides(t *testing.T) {
+	disabled := false
+	interval := 30
+	light := renderLightObject(t, config.Stream{ID: "cam1", RTSPURL: "rtsp://h/live", TargetFPS: 10,
+		Light: &config.LightConfig{Enabled: &disabled, IntervalSeconds: &interval}})
+	assertLight(t, light, map[string]any{
+		"enabled": false, "interval_seconds": 30.0, "on_change": true,
+		"dark_luma": 40.0, "light_luma": 70.0, "chroma_threshold": 10.0,
+		"ema_alpha": 0.1, "min_dwell_seconds": 5.0, "warmup_seconds": 3.0,
+		"roi_frac": 0.6, "sample_stride": 8.0, "monochrome_camera": false,
+	})
+}
+
+func TestRenderLightExplicitZeroHonored(t *testing.T) {
+	zero, zeroFloat := 0, 0.0
+	light := renderLightObject(t, config.Stream{ID: "cam1", RTSPURL: "rtsp://h/live", TargetFPS: 10,
+		Light: &config.LightConfig{DarkLuma: &zeroFloat, MinDwellSeconds: &zero, WarmupSeconds: &zero}})
+	assertLight(t, light, map[string]any{
+		"enabled": true, "interval_seconds": 10.0, "on_change": true,
+		"dark_luma": 0.0, "light_luma": 70.0, "chroma_threshold": 10.0,
+		"ema_alpha": 0.1, "min_dwell_seconds": 0.0, "warmup_seconds": 0.0,
+		"roi_frac": 0.6, "sample_stride": 8.0, "monochrome_camera": false,
+	})
+}

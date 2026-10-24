@@ -580,3 +580,48 @@ TEST_F(ConfigTest, ZoneDisabledWhenAbsent) {
     ASSERT_TRUE(config::load_from_file(path.string(), cfg, false, err, sizeof(err))) << err;
     EXPECT_FALSE(cfg.zone.enabled);
 }
+
+TEST_F(ConfigTest, LightDefaultsWhenAbsent) {
+    std::string json = R"({
+        "primary_model": {"name": "RetinaFace", "model_path": "model/RetinaFace.rknn"}
+    })";
+    fs::path config_file = write_config(json);
+
+    AppConfig cfg;
+    char err[256] = {0};
+    ASSERT_TRUE(config::load_from_file(config_file.string(), cfg, false, err, sizeof(err))) << err;
+
+    EXPECT_TRUE(cfg.light.enabled);
+    EXPECT_EQ(cfg.light.interval_seconds, 10);
+    EXPECT_TRUE(cfg.light.on_change);
+    EXPECT_FLOAT_EQ(cfg.light.dark_luma, 40.f);
+    EXPECT_FLOAT_EQ(cfg.light.light_luma, 70.f);
+    EXPECT_FLOAT_EQ(cfg.light.chroma_threshold, 10.f);
+    EXPECT_FLOAT_EQ(cfg.light.ema_alpha, 0.1f);
+    EXPECT_EQ(cfg.light.min_dwell_seconds, 5);
+    EXPECT_EQ(cfg.light.warmup_seconds, 3);
+    EXPECT_FLOAT_EQ(cfg.light.roi_frac, 0.6f);
+    EXPECT_EQ(cfg.light.sample_stride, 8);
+    EXPECT_FALSE(cfg.light.monochrome_camera);
+}
+
+TEST_F(ConfigTest, LightParsedWhenPresent) {
+    std::string json = R"({
+        "primary_model": {"name": "RetinaFace", "model_path": "model/RetinaFace.rknn"},
+        "light": {"enabled": false, "interval_seconds": 30, "dark_luma": 25, "monochrome_camera": true}
+    })";
+    fs::path config_file = write_config(json);
+
+    AppConfig cfg;
+    char err[256] = {0};
+    ASSERT_TRUE(config::load_from_file(config_file.string(), cfg, false, err, sizeof(err))) << err;
+
+    EXPECT_FALSE(cfg.light.enabled);
+    EXPECT_EQ(cfg.light.interval_seconds, 30);
+    EXPECT_FLOAT_EQ(cfg.light.dark_luma, 25.f);
+    EXPECT_TRUE(cfg.light.monochrome_camera);
+    EXPECT_TRUE(cfg.light.on_change);
+    EXPECT_FLOAT_EQ(cfg.light.light_luma, 70.f);
+    EXPECT_FLOAT_EQ(cfg.light.ema_alpha, 0.1f);
+    EXPECT_EQ(cfg.light.sample_stride, 8);
+}
