@@ -31,10 +31,10 @@ const (
 
 	// Short values keep every assertion reachable within one pass of a ~6s
 	// looped clip. A fast EMA lets a 3s dark segment cross the dark threshold.
-	lightWarmupSeconds  = 1
-	lightDwellSeconds   = 1
+	lightWarmupSeconds   = 1
+	lightDwellSeconds    = 1
 	lightIntervalSeconds = 1
-	lightEMAAlpha       = 0.3
+	lightEMAAlpha        = 0.3
 
 	// Generous relative to the 6s clip so several loops are available when
 	// the engine start-up or NPU warm-up delays the first frame.
