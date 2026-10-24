@@ -195,6 +195,7 @@ endif()
 add_executable(argus-engine
         src/main.cpp
         src/attention.cpp
+        src/analysis/light_analyzer.cpp
         src/file_utils.c
         src/image_utils.c
         src/image_drawing.c
