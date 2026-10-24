@@ -353,3 +353,41 @@ func TestValidateSourcesAndConfidence(t *testing.T) {
 		}
 	}
 }
+
+func TestLightOmittedIsValid(t *testing.T) {
+	w := Watcher{Streams: []Stream{{ID: "a", RTSPURL: "rtsp://h/live", TargetFPS: 10}}}
+	if err := w.Validate(); err != nil {
+		t.Fatalf("nil light rejected: %v", err)
+	}
+	w.Streams[0].Light = &LightConfig{}
+	if err := w.Validate(); err != nil {
+		t.Fatalf("empty light rejected: %v", err)
+	}
+}
+
+func TestLightValidationRejectsBadRanges(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		light LightConfig
+	}{
+		{"dark>light", LightConfig{DarkLuma: 100, LightLuma: 50}},
+		{"dark>default light", LightConfig{DarkLuma: 100}},
+		{"ema negative", LightConfig{EMAAlpha: -0.1}},
+		{"ema>1", LightConfig{EMAAlpha: 1.5}},
+		{"interval<1", LightConfig{IntervalSeconds: -1}},
+		{"stride<1", LightConfig{SampleStride: -1}},
+		{"roi negative", LightConfig{ROIFrac: -0.5}},
+		{"roi>1", LightConfig{ROIFrac: 1.2}},
+		{"dark>255", LightConfig{DarkLuma: 300, LightLuma: 400}},
+		{"chroma>255", LightConfig{ChromaThreshold: 300}},
+		{"chroma negative", LightConfig{ChromaThreshold: -1}},
+		{"dwell negative", LightConfig{MinDwellSeconds: -1}},
+		{"warmup negative", LightConfig{WarmupSeconds: -1}},
+	} {
+		light := tc.light
+		w := Watcher{Streams: []Stream{{ID: "a", RTSPURL: "rtsp://h/live", TargetFPS: 10, Light: &light}}}
+		if err := w.Validate(); err == nil {
+			t.Fatalf("%s: expected error, got nil", tc.name)
+		}
+	}
+}

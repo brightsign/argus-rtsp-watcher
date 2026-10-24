@@ -78,6 +78,8 @@ func Render(s config.Stream, o Options) ([]byte, error) {
 		}
 	}
 
+	m["light"] = renderLight(s.Light)
+
 	input, ok := m["input"].(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("template missing input object")
@@ -149,4 +151,48 @@ func Render(s config.Stream, o Options) ([]byte, error) {
 	mqtt["port"] = o.MQTTPort
 
 	return json.MarshalIndent(m, "", "  ")
+}
+
+// renderLight returns a fully-populated light object so the engine never has
+// to guess; every omitted field takes its section 4.5 default.
+func renderLight(l *config.LightConfig) map[string]any {
+	if l == nil {
+		l = &config.LightConfig{}
+	}
+	enabled := config.DefaultLightEnabled
+	if l.Enabled != nil {
+		enabled = *l.Enabled
+	}
+	onChange := config.DefaultLightOnChange
+	if l.OnChange != nil {
+		onChange = *l.OnChange
+	}
+	return map[string]any{
+		"enabled":           enabled,
+		"on_change":         onChange,
+		"interval_seconds":  intOrDefault(l.IntervalSeconds, config.DefaultLightIntervalSeconds),
+		"dark_luma":         floatOrDefault(l.DarkLuma, config.DefaultLightDarkLuma),
+		"light_luma":        floatOrDefault(l.LightLuma, config.DefaultLightLightLuma),
+		"chroma_threshold":  floatOrDefault(l.ChromaThreshold, config.DefaultLightChromaThreshold),
+		"ema_alpha":         floatOrDefault(l.EMAAlpha, config.DefaultLightEMAAlpha),
+		"min_dwell_seconds": intOrDefault(l.MinDwellSeconds, config.DefaultLightMinDwellSeconds),
+		"warmup_seconds":    intOrDefault(l.WarmupSeconds, config.DefaultLightWarmupSeconds),
+		"roi_frac":          floatOrDefault(l.ROIFrac, config.DefaultLightROIFrac),
+		"sample_stride":     intOrDefault(l.SampleStride, config.DefaultLightSampleStride),
+		"monochrome_camera": l.MonochromeCamera,
+	}
+}
+
+func intOrDefault(value, fallback int) int {
+	if value == 0 {
+		return fallback
+	}
+	return value
+}
+
+func floatOrDefault(value, fallback float64) float64 {
+	if value == 0 {
+		return fallback
+	}
+	return value
 }
