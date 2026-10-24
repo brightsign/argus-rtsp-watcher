@@ -70,6 +70,7 @@ The base Argus extension analyzes **one** camera per player. Many installs have 
 - **Multiple RTSP streams, one player** — configurable N (up to 8 on XT5).
 - **Per-person analytics** — person box, gaze + gaze time, dwell, direction, speed, entry/exit, stable track IDs.
 - **Per-stream MQTT** — `bs/argus/<stream-id>/analytics`, ~1 msg/s. See **[docs/bounding-boxes.md](docs/bounding-boxes.md)** for the box data.
+- **Light/dark detection** — per-stream real-world light state (`LIGHT`/`DARK`/`UNKNOWN`), IR-aware, on `bs/argus/<stream-id>/light` and in the analytics message. See [Light/dark detection](#lightdark-detection).
 - **Zones of interest** — draw a per-camera rectangle and each person reports `in_zone` (their feet inside it). Set it with `tools/zone-picker.sh`; see [Zones](#zones-regions-of-interest).
 - **Browser preview** — optional annotated MJPEG per stream (boxes over the video).
 - **Live reconfiguration** — edit `config.json` and streams are added/removed/retuned without restarting the others.
@@ -176,6 +177,7 @@ The single operator-facing file, with three top-level sections — `streams` (re
 | `streams[].target_fps` | no | Default `10`; intended range 5–10. Caps NPU load. |
 | `streams[].confidence` | no | Person-detection threshold, `0.0`–`1.0`. Omit for the engine default (`0.5`). See [Detection confidence](#detection-confidence). |
 | `streams[].zone` | no | Custom "important area" as `[x0,y0,x1,y1]`, normalized 0..1. When set, each track reports `in_zone`. Draw it with the on-player dashboard (`:20300`) or `tools/zone-picker.html`. |
+| `streams[].light` | no | Light/dark detection settings (`enabled`, `interval_seconds`, thresholds, ...). Defaults apply to omitted fields. See [Light/dark detection](#lightdark-detection). |
 | `streams[].zone_mode` | no | How a box is tested against the zone: `any` (default) — any part of the box overlapping the zone counts; `base` — only when the box's feet (bottom-centre) are inside. |
 
 *Each stream names exactly one source: `rtsp_url`, `file_path`, or `usb`.
@@ -344,7 +346,7 @@ cameras needed:
 
 ### MQTT (primary)
 
-Broker on the player, port `1883`, anonymous. One topic per stream: `bs/argus/<id>/analytics`, schema `analytics/v7.0`, ~1 msg/s. The per-person bounding boxes and gaze boxes are in the `tracks[]` array.
+Broker on the player, port `1883`, anonymous. One topic per stream: `bs/argus/<id>/analytics`, schema `analytics/v7.1` (additive over v7.0), ~1 msg/s. The per-person bounding boxes and gaze boxes are in the `tracks[]` array. A second topic, `bs/argus/<id>/light`, carries the scene light state — see [Light/dark detection](#lightdark-detection).
 
 When a stream has a `zone` configured, each track also carries an `in_zone` boolean — see [Zones](#zones-regions-of-interest).
 
@@ -366,6 +368,69 @@ example-client/bin/argus-example-client --broker <player-ip>:1883 | jq .
 example-client/bin/argus-example-client --broker <player-ip>:1883 \
   | jq -c 'select(any(.tracks[]?; .in_zone == true))'
 ```
+
+### Light/dark detection
+
+Each stream reports whether the scene is really light or dark. It is IR-aware: a monochrome night image from an IR-illuminated camera (near-zero chroma) is reported `DARK` even though the pixels are bright. In colour mode the decision uses smoothed luminance with hysteresis (a dead-band between `dark_luma` and `light_luma`) and a minimum dwell time so the state does not flap. Set `monochrome_camera: true` for feeds that are always grayscale; that skips the chroma rule and decides on luminance alone, which is less robust against IR illuminators.
+
+```mermaid
+flowchart LR
+    F[Frame ROI sample] --> E[EMA luma and chroma]
+    E --> C{chroma below threshold?}
+    C -->|yes, IR/mono| D[DARK, level 0]
+    C -->|no, colour| L{luma vs dark_luma / light_luma}
+    L -->|"<= dark_luma"| D2[DARK]
+    L -->|">= light_luma"| LT[LIGHT]
+    L -->|in between| H[hold current state]
+```
+
+**Light topic.** `bs/argus/<id>/light` is published every `interval_seconds` (default 10) with `event: "periodic"`, and immediately on a state change with `event: "change"` (when `on_change` is true). It is published **retained** (`retain: true`) at **QoS 1**, unlike the other topics, because it is a state topic: a subscriber that connects between heartbeats gets the current state at once.
+
+```json
+{
+  "device_id": "cam1",
+  "state": "DARK",
+  "level": 0,
+  "ir_mode": true,
+  "luma": 182.4,
+  "chroma": 2.1,
+  "event": "periodic",
+  "ts_ms": 1746732409123
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `state` | `LIGHT`, `DARK`, or `UNKNOWN` (during warm-up). |
+| `level` | Real-world light, `0`..`100`. Always `0` in IR mode. |
+| `ir_mode` | `true` when the feed is a monochrome/IR night image. |
+| `luma`, `chroma` | Smoothed luminance and chroma, for tuning thresholds. |
+| `event` | `periodic` or `change`. |
+
+**Analytics message (schema `analytics/v7.1`).** When light detection is enabled the analytics message gains a scene-level `"light": {"state","level","ir_mode","luma","chroma"}` object and each track gains a `"light": "<STATE>"` field. Both are omitted when detection is disabled, so v7.0 consumers keep working.
+
+**Configuration.** Add an optional `light` object to a stream in `config.json`. Every field is optional; omitted fields take the defaults below.
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `enabled` | `true` | Run light detection for this stream. |
+| `interval_seconds` | `10` | Periodic publish period on the light topic. |
+| `on_change` | `true` | Also publish immediately on a state transition. |
+| `dark_luma` | `40` | Smoothed luma at or below this means `DARK` (colour mode). |
+| `light_luma` | `70` | Smoothed luma at or above this means `LIGHT` (colour mode). Must be `>= dark_luma`. |
+| `chroma_threshold` | `10` | Smoothed chroma below this means IR/monochrome, reported `DARK`. |
+| `ema_alpha` | `0.1` | Per-frame smoothing factor. |
+| `min_dwell_seconds` | `5` | Minimum time in a state before it may flip. |
+| `warmup_seconds` | `3` | State is `UNKNOWN` until this much data is gathered. |
+| `roi_frac` | `0.6` | Central fraction of the frame that is sampled. |
+| `sample_stride` | `8` | Minimum pixel sampling stride. |
+| `monochrome_camera` | `false` | Always-grayscale feed: skip the chroma rule, luminance only. |
+
+```json
+{ "id": "cam1", "rtsp_url": "rtsp://192.0.2.101:554/stream1", "light": { "enabled": true, "interval_seconds": 10 } }
+```
+
+Design detail: [docs/superpowers/specs/2026-10-24-light-dark-detection-design.md](docs/superpowers/specs/2026-10-24-light-dark-detection-design.md).
 
 ### Browser preview (optional, on by default)
 

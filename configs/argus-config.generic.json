@@ -91,6 +91,22 @@
     "npu_core": 2
   },
 
+  "_comment_light": "Light/dark scene detection (analytics/v7.1, topic bs/argus/<id>/light). All fields optional; omitted fields take the defaults shown. enabled (true): run detection. interval_seconds (10): periodic publish period on the light topic. on_change (true): also publish immediately on a state transition. dark_luma (40): EMA luma at/below which colour-mode state is DARK. light_luma (70): EMA luma at/above which colour-mode state is LIGHT (dark_luma must be <= light_luma; the gap is the hysteresis dead-band). chroma_threshold (10): EMA chroma below this means monochrome/IR night image, reported DARK even if bright. ema_alpha (0.1): per-frame EMA smoothing factor. min_dwell_seconds (5): minimum time in a state before it may flip. warmup_seconds (3): state is UNKNOWN until this much data is gathered. roi_frac (0.6): central fraction of the frame sampled. sample_stride (8): minimum pixel sampling stride. monochrome_camera (false): set true for always-grayscale feeds to skip the chroma rule (pure luminance, less robust).",
+  "light": {
+    "enabled": true,
+    "interval_seconds": 10,
+    "on_change": true,
+    "dark_luma": 40,
+    "light_luma": 70,
+    "chroma_threshold": 10,
+    "ema_alpha": 0.1,
+    "min_dwell_seconds": 5,
+    "warmup_seconds": 3,
+    "roi_frac": 0.6,
+    "sample_stride": 8,
+    "monochrome_camera": false
+  },
+
   "_comment_test_modes": "Run a single model for debugging. Both false = production (both models).",
   "test_face_only": false,
   "test_yolo_only": false

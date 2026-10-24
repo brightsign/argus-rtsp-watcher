@@ -344,6 +344,11 @@ Resolved during implementation; none change the design's shape:
 
 ## 13. Related
 
+- [`superpowers/specs/2026-10-24-light-dark-detection-design.md`](superpowers/specs/2026-10-24-light-dark-detection-design.md)
+  — per-stream light/dark scene detection (IR-aware): `bs/argus/<id>/light`
+  topic (retained, QoS 1), analytics schema `analytics/v7.1`, and the per-stream
+  `light` config block. User-facing summary in the README.
+
 - [`../VISION.md`](../VISION.md) — what and why.
 - `argus-audience-measurement-extension` — source of the copied engine and the
   build/packaging patterns this project adapts.

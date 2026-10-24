@@ -1,6 +1,6 @@
 {
   "streams": [
-    { "id": "cam1", "rtsp_url": "rtsp://192.0.2.101:554/stream1", "target_fps": 10 }
+    { "id": "cam1", "rtsp_url": "rtsp://192.0.2.101:554/stream1", "target_fps": 10, "light": { "enabled": true, "interval_seconds": 10 } }
   ],
   "mediamtx": { "enabled": false },
   "engine": {
