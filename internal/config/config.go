@@ -72,60 +72,61 @@ const (
 
 // LightConfig is the optional per-stream light/dark detection block. Enabled
 // is a pointer so an omitted value (default true) differs from an explicit
-// false; for the other fields zero means unset and the default applies.
+// false; the numeric fields are pointers for the same reason, so an explicit 0
+// is validated (or honored) rather than silently defaulted.
 type LightConfig struct {
-	Enabled          *bool   `json:"enabled"`
-	IntervalSeconds  int     `json:"interval_seconds"`
-	OnChange         *bool   `json:"on_change"`
-	DarkLuma         float64 `json:"dark_luma"`
-	LightLuma        float64 `json:"light_luma"`
-	ChromaThreshold  float64 `json:"chroma_threshold"`
-	EMAAlpha         float64 `json:"ema_alpha"`
-	MinDwellSeconds  int     `json:"min_dwell_seconds"`
-	WarmupSeconds    int     `json:"warmup_seconds"`
-	ROIFrac          float64 `json:"roi_frac"`
-	SampleStride     int     `json:"sample_stride"`
-	MonochromeCamera bool    `json:"monochrome_camera"`
+	Enabled          *bool    `json:"enabled"`
+	IntervalSeconds  *int     `json:"interval_seconds"`
+	OnChange         *bool    `json:"on_change"`
+	DarkLuma         *float64 `json:"dark_luma"`
+	LightLuma        *float64 `json:"light_luma"`
+	ChromaThreshold  *float64 `json:"chroma_threshold"`
+	EMAAlpha         *float64 `json:"ema_alpha"`
+	MinDwellSeconds  *int     `json:"min_dwell_seconds"`
+	WarmupSeconds    *int     `json:"warmup_seconds"`
+	ROIFrac          *float64 `json:"roi_frac"`
+	SampleStride     *int     `json:"sample_stride"`
+	MonochromeCamera bool     `json:"monochrome_camera"`
 }
 
-// validateLight checks operator-supplied values; zero fields are unset and
-// take their defaults, so the dark/light ordering is checked on effective values.
+// validateLight checks every operator-supplied (non-nil) value; nil fields take
+// their defaults, so the dark/light ordering is checked on effective values.
 func validateLight(streamID string, l *LightConfig) error {
-	if l.IntervalSeconds < 0 {
-		return fmt.Errorf("stream %q light.interval_seconds = %d must be >= 1", streamID, l.IntervalSeconds)
+	if l.IntervalSeconds != nil && *l.IntervalSeconds < 1 {
+		return fmt.Errorf("stream %q light.interval_seconds = %d must be >= 1", streamID, *l.IntervalSeconds)
 	}
-	if l.SampleStride < 0 {
-		return fmt.Errorf("stream %q light.sample_stride = %d must be >= 1", streamID, l.SampleStride)
+	if l.SampleStride != nil && *l.SampleStride < 1 {
+		return fmt.Errorf("stream %q light.sample_stride = %d must be >= 1", streamID, *l.SampleStride)
 	}
-	if l.EMAAlpha < 0 || l.EMAAlpha > 1 {
-		return fmt.Errorf("stream %q light.ema_alpha = %g is out of range (0,1]", streamID, l.EMAAlpha)
+	if l.EMAAlpha != nil && (*l.EMAAlpha <= 0 || *l.EMAAlpha > 1) {
+		return fmt.Errorf("stream %q light.ema_alpha = %g must be > 0 and <= 1", streamID, *l.EMAAlpha)
 	}
-	if l.ROIFrac < 0 || l.ROIFrac > 1 {
-		return fmt.Errorf("stream %q light.roi_frac = %g is out of range (0,1]", streamID, l.ROIFrac)
+	if l.ROIFrac != nil && (*l.ROIFrac <= 0 || *l.ROIFrac > 1) {
+		return fmt.Errorf("stream %q light.roi_frac = %g must be > 0 and <= 1", streamID, *l.ROIFrac)
 	}
-	if l.MinDwellSeconds < 0 {
-		return fmt.Errorf("stream %q light.min_dwell_seconds = %d must be >= 0", streamID, l.MinDwellSeconds)
+	if l.MinDwellSeconds != nil && *l.MinDwellSeconds < 0 {
+		return fmt.Errorf("stream %q light.min_dwell_seconds = %d must be >= 0", streamID, *l.MinDwellSeconds)
 	}
-	if l.WarmupSeconds < 0 {
-		return fmt.Errorf("stream %q light.warmup_seconds = %d must be >= 0", streamID, l.WarmupSeconds)
+	if l.WarmupSeconds != nil && *l.WarmupSeconds < 0 {
+		return fmt.Errorf("stream %q light.warmup_seconds = %d must be >= 0", streamID, *l.WarmupSeconds)
 	}
 	levels := []struct {
 		name  string
-		value float64
+		value *float64
 	}{
 		{"dark_luma", l.DarkLuma}, {"light_luma", l.LightLuma}, {"chroma_threshold", l.ChromaThreshold},
 	}
 	for _, level := range levels {
-		if level.value < 0 || level.value > MaxLightLevel {
-			return fmt.Errorf("stream %q light.%s = %g is out of range [0,%d]", streamID, level.name, level.value, MaxLightLevel)
+		if level.value != nil && (*level.value < 0 || *level.value > MaxLightLevel) {
+			return fmt.Errorf("stream %q light.%s = %g is out of range [0,%d]", streamID, level.name, *level.value, MaxLightLevel)
 		}
 	}
-	dark, light := l.DarkLuma, l.LightLuma
-	if dark == 0 {
-		dark = DefaultLightDarkLuma
+	dark, light := float64(DefaultLightDarkLuma), float64(DefaultLightLightLuma)
+	if l.DarkLuma != nil {
+		dark = *l.DarkLuma
 	}
-	if light == 0 {
-		light = DefaultLightLightLuma
+	if l.LightLuma != nil {
+		light = *l.LightLuma
 	}
 	if dark > light {
 		return fmt.Errorf("stream %q light.dark_luma = %g must be <= light_luma = %g", streamID, dark, light)

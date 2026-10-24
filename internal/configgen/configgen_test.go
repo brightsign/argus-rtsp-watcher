@@ -299,12 +299,25 @@ func TestRenderLightDefaults(t *testing.T) {
 
 func TestRenderLightOverrides(t *testing.T) {
 	disabled := false
+	interval := 30
 	light := renderLightObject(t, config.Stream{ID: "cam1", RTSPURL: "rtsp://h/live", TargetFPS: 10,
-		Light: &config.LightConfig{Enabled: &disabled, IntervalSeconds: 30}})
+		Light: &config.LightConfig{Enabled: &disabled, IntervalSeconds: &interval}})
 	assertLight(t, light, map[string]any{
 		"enabled": false, "interval_seconds": 30.0, "on_change": true,
 		"dark_luma": 40.0, "light_luma": 70.0, "chroma_threshold": 10.0,
 		"ema_alpha": 0.1, "min_dwell_seconds": 5.0, "warmup_seconds": 3.0,
+		"roi_frac": 0.6, "sample_stride": 8.0, "monochrome_camera": false,
+	})
+}
+
+func TestRenderLightExplicitZeroHonored(t *testing.T) {
+	zero, zeroFloat := 0, 0.0
+	light := renderLightObject(t, config.Stream{ID: "cam1", RTSPURL: "rtsp://h/live", TargetFPS: 10,
+		Light: &config.LightConfig{DarkLuma: &zeroFloat, MinDwellSeconds: &zero, WarmupSeconds: &zero}})
+	assertLight(t, light, map[string]any{
+		"enabled": true, "interval_seconds": 10.0, "on_change": true,
+		"dark_luma": 0.0, "light_luma": 70.0, "chroma_threshold": 10.0,
+		"ema_alpha": 0.1, "min_dwell_seconds": 0.0, "warmup_seconds": 0.0,
 		"roi_frac": 0.6, "sample_stride": 8.0, "monochrome_camera": false,
 	})
 }

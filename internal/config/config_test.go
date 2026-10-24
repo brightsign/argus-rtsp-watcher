@@ -365,29 +365,62 @@ func TestLightOmittedIsValid(t *testing.T) {
 	}
 }
 
+func intPtr(v int) *int           { return &v }
+func floatPtr(v float64) *float64 { return &v }
+
 func TestLightValidationRejectsBadRanges(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		light LightConfig
 	}{
-		{"dark>light", LightConfig{DarkLuma: 100, LightLuma: 50}},
-		{"dark>default light", LightConfig{DarkLuma: 100}},
-		{"ema negative", LightConfig{EMAAlpha: -0.1}},
-		{"ema>1", LightConfig{EMAAlpha: 1.5}},
-		{"interval<1", LightConfig{IntervalSeconds: -1}},
-		{"stride<1", LightConfig{SampleStride: -1}},
-		{"roi negative", LightConfig{ROIFrac: -0.5}},
-		{"roi>1", LightConfig{ROIFrac: 1.2}},
-		{"dark>255", LightConfig{DarkLuma: 300, LightLuma: 400}},
-		{"chroma>255", LightConfig{ChromaThreshold: 300}},
-		{"chroma negative", LightConfig{ChromaThreshold: -1}},
-		{"dwell negative", LightConfig{MinDwellSeconds: -1}},
-		{"warmup negative", LightConfig{WarmupSeconds: -1}},
+		{"dark>light", LightConfig{DarkLuma: floatPtr(100), LightLuma: floatPtr(50)}},
+		{"dark>default light", LightConfig{DarkLuma: floatPtr(100)}},
+		{"light<default dark", LightConfig{LightLuma: floatPtr(30)}},
+		{"ema zero", LightConfig{EMAAlpha: floatPtr(0)}},
+		{"ema negative", LightConfig{EMAAlpha: floatPtr(-0.1)}},
+		{"ema>1", LightConfig{EMAAlpha: floatPtr(1.5)}},
+		{"interval zero", LightConfig{IntervalSeconds: intPtr(0)}},
+		{"interval negative", LightConfig{IntervalSeconds: intPtr(-1)}},
+		{"stride zero", LightConfig{SampleStride: intPtr(0)}},
+		{"stride negative", LightConfig{SampleStride: intPtr(-1)}},
+		{"roi zero", LightConfig{ROIFrac: floatPtr(0)}},
+		{"roi negative", LightConfig{ROIFrac: floatPtr(-0.5)}},
+		{"roi>1", LightConfig{ROIFrac: floatPtr(1.2)}},
+		{"dark<0", LightConfig{DarkLuma: floatPtr(-1)}},
+		{"light>255", LightConfig{LightLuma: floatPtr(256)}},
+		{"chroma>255", LightConfig{ChromaThreshold: floatPtr(256)}},
+		{"chroma negative", LightConfig{ChromaThreshold: floatPtr(-1)}},
+		{"dwell negative", LightConfig{MinDwellSeconds: intPtr(-1)}},
+		{"warmup negative", LightConfig{WarmupSeconds: intPtr(-1)}},
 	} {
 		light := tc.light
 		w := Watcher{Streams: []Stream{{ID: "a", RTSPURL: "rtsp://h/live", TargetFPS: 10, Light: &light}}}
 		if err := w.Validate(); err == nil {
 			t.Fatalf("%s: expected error, got nil", tc.name)
+		}
+	}
+}
+
+func TestLightValidationAcceptsBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		light LightConfig
+	}{
+		{"dark zero", LightConfig{DarkLuma: floatPtr(0)}},
+		{"dwell zero", LightConfig{MinDwellSeconds: intPtr(0)}},
+		{"warmup zero", LightConfig{WarmupSeconds: intPtr(0)}},
+		{"interval one", LightConfig{IntervalSeconds: intPtr(1)}},
+		{"stride one", LightConfig{SampleStride: intPtr(1)}},
+		{"ema one", LightConfig{EMAAlpha: floatPtr(1)}},
+		{"roi one", LightConfig{ROIFrac: floatPtr(1)}},
+		{"dark equals light", LightConfig{DarkLuma: floatPtr(50), LightLuma: floatPtr(50)}},
+		{"luma 255", LightConfig{DarkLuma: floatPtr(255), LightLuma: floatPtr(255)}},
+		{"chroma zero", LightConfig{ChromaThreshold: floatPtr(0)}},
+	} {
+		light := tc.light
+		w := Watcher{Streams: []Stream{{ID: "a", RTSPURL: "rtsp://h/live", TargetFPS: 10, Light: &light}}}
+		if err := w.Validate(); err != nil {
+			t.Fatalf("%s: unexpected error %v", tc.name, err)
 		}
 	}
 }
