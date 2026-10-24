@@ -43,6 +43,7 @@ set(TEST_DEPENDENCIES
     # npu_core.cc: select_core_mask (test_core_mask.cpp)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/npu_core.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/analysis/light_analyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/analysis/light_json.cpp
 )
 
 add_executable(run_engine_tests ${TEST_SOURCES} ${TEST_DEPENDENCIES})
