@@ -33,7 +33,7 @@ const (
 	// looped clip. A fast EMA lets a 3s dark segment cross the dark threshold.
 	lightWarmupSeconds  = 1
 	lightDwellSeconds   = 1
-	lightIntervalSecond = 1
+	lightIntervalSeconds = 1
 	lightEMAAlpha       = 0.3
 
 	// Generous relative to the 6s clip so several loops are available when
@@ -79,7 +79,11 @@ func TestLightDetectionBrightToDark(t *testing.T) {
 	session := startLightSession(t, "light-to-dark", "light_to_dark.mp4")
 
 	var sawLight, sawDark bool
+	var analyticsSeen int
 	err := session.observe(t, lightObserveTimeout, func(light *lightMessage, analytics *analyticsMessage) bool {
+		if analytics != nil {
+			analyticsSeen++
+		}
 		if light != nil {
 			switch light.State {
 			case "LIGHT":
@@ -88,13 +92,18 @@ func TestLightDetectionBrightToDark(t *testing.T) {
 				}
 				sawLight = true
 			case "DARK":
-				sawDark = true
+				// Only a DARK after a LIGHT proves a real transition; the
+				// clip loops, so one always follows.
+				if sawLight {
+					sawDark = true
+				}
 			}
 		}
-		return sawLight && sawDark
+		return sawLight && sawDark && analyticsSeen > 0
 	})
 	if err != nil {
-		t.Fatalf("did not observe both LIGHT (ir_mode=false) and DARK (sawLight=%v sawDark=%v): %v", sawLight, sawDark, err)
+		t.Fatalf("did not observe LIGHT (ir_mode=false) then DARK with analytics (sawLight=%v sawDark=%v analyticsSeen=%d): %v",
+			sawLight, sawDark, analyticsSeen, err)
 	}
 
 	session.assertRetainedLightState(t)
@@ -104,7 +113,11 @@ func TestLightDetectionIRNight(t *testing.T) {
 	session := startLightSession(t, "light-ir", "ir_night.mp4")
 
 	var sawIRDark bool
+	var analyticsSeen int
 	err := session.observe(t, lightObserveTimeout, func(light *lightMessage, analytics *analyticsMessage) bool {
+		if analytics != nil {
+			analyticsSeen++
+		}
 		if light != nil && light.State == "DARK" {
 			if light.IRMode == nil || !*light.IRMode {
 				t.Fatalf("bright grayscale clip is DARK and must report ir_mode=true, got %+v", light)
@@ -114,10 +127,11 @@ func TestLightDetectionIRNight(t *testing.T) {
 		if light != nil && light.State == "LIGHT" {
 			t.Fatalf("bright grayscale (IR) clip must never read as LIGHT, got %+v", light)
 		}
-		return sawIRDark
+		return sawIRDark && analyticsSeen > 0
 	})
 	if err != nil {
-		t.Fatalf("did not observe DARK with ir_mode=true: %v", err)
+		t.Fatalf("did not observe DARK with ir_mode=true plus analytics (sawIRDark=%v analyticsSeen=%d): %v",
+			sawIRDark, analyticsSeen, err)
 	}
 
 	session.assertRetainedLightState(t)
@@ -171,7 +185,7 @@ func startLightSession(t *testing.T, streamID, fixtureName string) lightSession 
 	onChange := true
 	warmup := lightWarmupSeconds
 	dwell := lightDwellSeconds
-	interval := lightIntervalSecond
+	interval := lightIntervalSeconds
 	alpha := lightEMAAlpha
 	stream := config.Stream{
 		ID:        streamID,
