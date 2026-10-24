@@ -52,3 +52,11 @@ TEST(LightJson, NotChangedWhenIdentical) {
     const LightState state = makeState(LightLevelState::Light, 80, false, 150.f, 30.f);
     EXPECT_FALSE(light_changed(state, state));
 }
+
+TEST(LightJson, OversizedDeviceIdTruncatesInsteadOfThrowing) {
+    const std::string hugeDeviceId(2000, 'x');
+    const LightState state = makeState(LightLevelState::Light, 80, false, 150.f, 30.f);
+    std::string payload;
+    ASSERT_NO_THROW(payload = light_topic_json(hugeDeviceId, state, "periodic", 1));
+    EXPECT_EQ(511u, payload.size());
+}

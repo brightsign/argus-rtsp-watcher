@@ -384,7 +384,7 @@ flowchart LR
     L -->|in between| H[hold current state]
 ```
 
-**Light topic.** `bs/argus/<id>/light` is published every `interval_seconds` (default 10) with `event: "periodic"`, and immediately on a state change with `event: "change"` (when `on_change` is true). It is published **retained** (`retain: true`) at **QoS 1**, unlike the other topics, because it is a state topic: a subscriber that connects between heartbeats gets the current state at once.
+**Light topic.** `bs/argus/<id>/light` is published every `interval_seconds` (default 10) with `event: "periodic"`, and immediately on a state change with `event: "change"` (when `on_change` is true). It is published **retained** (`retain: true`) at **QoS 1**, unlike the analytics topic, which is not retained by default, because it is a state topic: a subscriber that connects between heartbeats gets the current state at once.
 
 ```json
 {

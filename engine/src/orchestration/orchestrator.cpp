@@ -382,6 +382,7 @@ void Orchestrator::destroy_pipeline() noexcept {
     frame_writer_yolo_->flush();
     frame_writer_yolo_.reset();
   }
+  light_analyzer_.reset();
 
   // Stop and clear publishers
   for (auto& pub : publishers_) {

@@ -502,7 +502,10 @@ void MqttPublisher::tick_publish() noexcept {
                    clk::now().time_since_epoch()).count();
       const int64_t interval_ms =
           static_cast<int64_t>(cfg_.light.interval_seconds) * 1000;
-      if (now_ms - last_light_pub_ms_ >= interval_ms) {
+      // Stay silent during warmup: the on-change path never emits UNKNOWN, and a
+      // retained UNKNOWN would mask the real state for late subscribers.
+      if (light_.state != LightLevelState::Unknown &&
+          now_ms - last_light_pub_ms_ >= interval_ms) {
         fire_light = true;
         light_to_publish = light_;
         last_light_ = light_;
@@ -526,9 +529,13 @@ void MqttPublisher::tick_publish() noexcept {
 // retain=true are deliberate for this state topic: a late subscriber must be
 // able to read the current state without waiting for the next change or tick.
 void MqttPublisher::publish_light(const LightState& s, const char* event,
-                                  int64_t now_ms) noexcept {
+                                  int64_t /*steady_now_ms*/) noexcept {
   if (!mq_ || light_topic_.empty()) return;
-  const std::string payload = light_topic_json(cfg_.device_id, s, event, now_ms);
+  // Payload ts_ms is wall-clock epoch ms (spec 7.1); the steady clock is only
+  // valid for interval arithmetic, not for consumers.
+  const int64_t wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  const std::string payload = light_topic_json(cfg_.device_id, s, event, wall_ms);
   const int rc = mosquitto_publish(mq_, nullptr, light_topic_.c_str(),
                                    int(payload.size()), payload.data(),
                                    /*qos=*/1, /*retain=*/true);

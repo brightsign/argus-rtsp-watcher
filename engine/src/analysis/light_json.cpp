@@ -2,7 +2,7 @@
 
 #include <cinttypes>
 #include <cstdio>
-#include <stdexcept>
+#include <algorithm>
 
 namespace {
 
@@ -10,10 +10,13 @@ namespace {
 constexpr size_t kJsonBufferSize = 512;
 
 std::string finish(int written, const char* buffer) {
-    if (written < 0 || static_cast<size_t>(written) >= kJsonBufferSize) {
-        throw std::length_error("light json exceeds buffer");
+    // Truncates rather than throws: callers sit behind noexcept publish paths where
+    // an exception would terminate the process, matching zone_event/analytics.
+    if (written < 0) {
+        return std::string();
     }
-    return std::string(buffer, static_cast<size_t>(written));
+    const size_t length = std::min(static_cast<size_t>(written), kJsonBufferSize - 1);
+    return std::string(buffer, length);
 }
 
 }  // namespace
