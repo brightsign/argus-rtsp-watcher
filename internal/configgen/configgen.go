@@ -22,6 +22,7 @@ type Options struct {
 	MQTTHost      string
 	MQTTPort      int
 	FramesBaseDir string
+	LogLevel      string // global engine log verbosity; empty leaves the template's value
 }
 
 // Topic returns the per-stream MQTT topic for a stream id.
@@ -49,6 +50,19 @@ func Render(s config.Stream, o Options) ([]byte, error) {
 	m["device_id"] = s.ID
 	m["enable_frame_output"] = true
 	m["output_dir"] = FramesDir(o, s.ID)
+
+	// Global logging verbosity: when the operator sets log_level, it governs
+	// every stream's engine process; otherwise the template's value stands.
+	if o.LogLevel != "" {
+		m["log_level"] = o.LogLevel
+	}
+
+	// Per-stream face-detection toggle. Only an explicit value overrides the
+	// template: detect_faces=false turns on the engine's test_yolo_only mode
+	// (RetinaFace off, YOLOX person detection still running); true forces it off.
+	if s.DetectFaces != nil {
+		m["test_yolo_only"] = !*s.DetectFaces
+	}
 
 	if s.Zone != nil {
 		mode := s.ZoneMode

@@ -257,6 +257,87 @@ func TestRenderConfidence(t *testing.T) {
 	}
 }
 
+func TestRenderDetectFacesDisabled(t *testing.T) {
+	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	off := false
+	out, err := Render(config.Stream{ID: "cam", RTSPURL: "rtsp://h/live", TargetFPS: 10, DetectFaces: &off}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["test_yolo_only"] != true {
+		t.Errorf("detect_faces=false should set test_yolo_only=true, got %v", m["test_yolo_only"])
+	}
+}
+
+func TestRenderDetectFacesEnabled(t *testing.T) {
+	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	on := true
+	out, err := Render(config.Stream{ID: "cam", RTSPURL: "rtsp://h/live", TargetFPS: 10, DetectFaces: &on}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["test_yolo_only"] != false {
+		t.Errorf("detect_faces=true should set test_yolo_only=false, got %v", m["test_yolo_only"])
+	}
+}
+
+func TestRenderDetectFacesOmittedInheritsTemplate(t *testing.T) {
+	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	out, err := Render(config.Stream{ID: "cam", RTSPURL: "rtsp://h/live", TargetFPS: 10}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	// The packaged template ships test_yolo_only=false; omitting detect_faces
+	// must leave that value untouched (faces stay on).
+	if m["test_yolo_only"] != false {
+		t.Errorf("omitted detect_faces should inherit template test_yolo_only=false, got %v", m["test_yolo_only"])
+	}
+}
+
+func TestRenderLogLevel(t *testing.T) {
+	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883, LogLevel: "warn"}
+	out, err := Render(config.Stream{ID: "cam", RTSPURL: "rtsp://h/live", TargetFPS: 10}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["log_level"] != "warn" {
+		t.Errorf("log_level = %v, want warn", m["log_level"])
+	}
+}
+
+func TestRenderLogLevelOmittedInheritsTemplate(t *testing.T) {
+	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	out, err := Render(config.Stream{ID: "cam", RTSPURL: "rtsp://h/live", TargetFPS: 10}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	// The packaged template ships log_level=info; an empty Options.LogLevel must
+	// leave it in place.
+	if m["log_level"] != "info" {
+		t.Errorf("omitted LogLevel should inherit template log_level=info, got %v", m["log_level"])
+	}
+}
+
 func renderLightObject(t *testing.T, s config.Stream) map[string]any {
 	t.Helper()
 	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}

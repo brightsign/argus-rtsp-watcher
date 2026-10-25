@@ -78,7 +78,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("engine template: %v", err)
 	}
-	opts := configgen.Options{TemplateJSON: tpl, TopicPrefix: topicPrefix, MQTTHost: mqttHost, MQTTPort: mqttPort}
+	opts := configgen.Options{TemplateJSON: tpl, TopicPrefix: topicPrefix, MQTTHost: mqttHost, MQTTPort: mqttPort, LogLevel: w.LogLevel}
 
 	engineBin := filepath.Join(extDir, "argus-engine")
 	engineEnv := engineEnviron(extDir)
@@ -120,7 +120,7 @@ func main() {
 			log.Printf("reload skipped, engine template: %v", err)
 			return
 		}
-		nopts := configgen.Options{TemplateJSON: ntpl, TopicPrefix: topicPrefix, MQTTHost: mqttHost, MQTTPort: mqttPort}
+		nopts := configgen.Options{TemplateJSON: ntpl, TopicPrefix: topicPrefix, MQTTHost: mqttHost, MQTTPort: mqttPort, LogLevel: nw.LogLevel}
 		specs, err := buildSpecs(nw, nopts, engineBin, extDir, cfgPath, engineEnv)
 		if err != nil {
 			log.Printf("reload skipped, build specs: %v", err)

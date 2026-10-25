@@ -15,6 +15,15 @@ import (
 // DefaultTargetFPS caps per-stream capture when a stream omits target_fps.
 const DefaultTargetFPS = 10
 
+// LogLevels is the set of engine logging verbosities config.json may request
+// (case-insensitive), kept in sync with the engine's parser in main.cpp. An
+// empty log_level inherits the engine template's own value (packaged default
+// "info"). Raising this to "warn" silences the engine's per-event INFO logs.
+var LogLevels = map[string]bool{
+	"debug": true, "info": true, "warn": true, "warning": true,
+	"error": true, "critical": true,
+}
+
 // Zone membership modes for the per-track in_zone field. ZoneModeAny (any part
 // of the bounding box overlapping the zone) is the default; ZoneModeBase
 // requires the box's feet (bottom-center) to be inside the zone.
@@ -153,6 +162,7 @@ type Stream struct {
 	USBFPS              int          `json:"usb_fps"`    // optional USB capture fps    (0 = engine default)
 	TargetFPS           int          `json:"target_fps"`
 	Confidence          *float64     `json:"confidence"`            // optional person-detection threshold 0..1 (nil = engine default 0.5)
+	DetectFaces         *bool        `json:"detect_faces"`          // optional face-detection toggle (nil = engine default on); false disables RetinaFace (test_yolo_only), leaving person detection running
 	Zone                []float64    `json:"zone"`                  // optional [x0,y0,x1,y1], normalized 0..1
 	ZoneMode            string       `json:"zone_mode"`             // zone membership test: "any" (default) or "base"
 	ZoneColor           string       `json:"zone_color"`            // zone outline color "#RRGGBB" (default DefaultZoneColor)
@@ -178,6 +188,7 @@ type Watcher struct {
 	Streams  []Stream        `json:"streams"`
 	Mediamtx Mediamtx        `json:"mediamtx"`
 	Engine   json.RawMessage `json:"engine"`
+	LogLevel string          `json:"log_level"` // optional global engine log verbosity; empty inherits the template default ("info")
 }
 
 // MediamtxSearchPaths returns the mediamtx.yml discovery order, first-found-wins.
@@ -300,6 +311,9 @@ func Load(path string) (Watcher, error) {
 func (w Watcher) Validate() error {
 	if len(w.Streams) == 0 {
 		return fmt.Errorf("config.json defines no streams")
+	}
+	if w.LogLevel != "" && !LogLevels[strings.ToLower(w.LogLevel)] {
+		return fmt.Errorf("log_level = %q must be one of debug, info, warn, error, critical", w.LogLevel)
 	}
 	seen := make(map[string]bool, len(w.Streams))
 	for _, s := range w.Streams {

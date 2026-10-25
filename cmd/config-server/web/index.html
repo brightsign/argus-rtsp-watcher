@@ -37,6 +37,9 @@
   .modesw .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
                   background: #fff; transition: left .15s; }
   .modesw .track.base .knob { left: 22px; }
+  /* faces on/off toggle: left = off, right = on (reuses the .modesw slider) */
+  .modesw .track.on { background: var(--accent); }
+  .modesw .track.on .knob { left: 22px; }
   .colorpick { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; opacity: .85; }
   .colorpick input[type=color] { width: 28px; height: 22px; padding: 0; border: 1px solid rgba(127,127,127,.5);
                                  border-radius: 4px; background: transparent; cursor: pointer; }
@@ -49,7 +52,7 @@
 </head>
 <body>
 <h1>Argus Zone Dashboard</h1>
-<p class="sub">Draw a detection zone on each camera's live view, pick its match mode (any / base), outline color, line width, and alert-border width, then Save that pane. Changes apply on the player within a few seconds (no reboot). The zone shows as a faint green outline on the video feed. <b>any</b> = any part of a person's box in the zone counts; <b>base</b> = only when their feet are in it.</p>
+<p class="sub">Draw a detection zone on each camera's live view, pick its match mode (any / base), outline color, line width, and alert-border width, set the person-detection <b>confidence</b> threshold, toggle <b>face detection</b> (gaze/attention) on or off, then Save that pane. Changes apply on the player within a few seconds (no reboot). The zone shows as a faint green outline on the video feed. <b>any</b> = any part of a person's box in the zone counts; <b>base</b> = only when their feet are in it. Turning face detection off cuts CPU/NPU load; person detection, tracking, and zones keep running.</p>
 <div id="cams"></div>
 
 <div id="bar">
@@ -78,7 +81,7 @@
   // zoneSig captures just the editable fields, so dirty tracking ignores
   // unrelated config (engine block, etc.) the dashboard never touches.
   function zoneSig(s) {
-    return JSON.stringify([s.zone || null, s.zone_mode, s.zone_color, s.zone_thickness, s.zone_border_thickness, s.zone_window_minutes]);
+    return JSON.stringify([s.zone || null, s.zone_mode, s.zone_color, s.zone_thickness, s.zone_border_thickness, s.zone_window_minutes, s.confidence, s.detect_faces]);
   }
   function snapshotBaseline() {
     baseline = Array.isArray(cfg && cfg.streams) ? cfg.streams.map(zoneSig) : [];
@@ -148,6 +151,13 @@
       '<span class="borderval"></span></label>' +
       '<label class="winpick" title="Rolling window for the on-video detect count">' +
       'count window <input type="number" min="1" max="1440" step="1" class="zonewin"> min</label>' +
+      '<label class="thickpick" title="Person-detection confidence threshold (0-1); higher = fewer false positives">' +
+      'confidence <input type="range" min="0.05" max="0.95" step="0.05" class="conf">' +
+      '<span class="confval"></span></label>' +
+      '<span class="modesw" title="Face detection (gaze/attention). Off reduces CPU/NPU load; person detection still runs.">' +
+      'faces <span class="lbl lfoff">off</span>' +
+      '<span class="track facetrack"><span class="knob"></span></span>' +
+      '<span class="lbl lfon">on</span></span>' +
       '<button class="primary savecard">Save</button>' +
       '<span class="cardstatus"></span></div>';
 
@@ -197,6 +207,32 @@
       cfg.streams[idx].zone_window_minutes = (v >= 1 && v <= 1440) ? v : 15;
       refreshDirty();
     });
+
+    var confEl = card.querySelector(".conf");
+    var confValEl = card.querySelector(".confval");
+    confEl.value = cfg.streams[idx].confidence;
+    confValEl.textContent = (+cfg.streams[idx].confidence).toFixed(2);
+    confEl.addEventListener("input", function () {
+      cfg.streams[idx].confidence = +confEl.value;
+      confValEl.textContent = (+confEl.value).toFixed(2);
+      refreshDirty();
+    });
+
+    var faceTrack = card.querySelector(".facetrack");
+    var lblFacesOff = card.querySelector(".lfoff");
+    var lblFacesOn = card.querySelector(".lfon");
+    function syncFaces() {
+      var on = cfg.streams[idx].detect_faces !== false;
+      faceTrack.classList.toggle("on", on);
+      lblFacesOn.classList.toggle("on", on);
+      lblFacesOff.classList.toggle("on", !on);
+    }
+    faceTrack.addEventListener("click", function () {
+      cfg.streams[idx].detect_faces = cfg.streams[idx].detect_faces === false;
+      syncFaces();
+      refreshDirty();
+    });
+    syncFaces();
 
     function syncMode() {
       var base = cfg.streams[idx].zone_mode === "base";
@@ -305,6 +341,9 @@
             s.zone_border_thickness = (bt >= 1 && bt <= 100) ? bt : 20;
             var wm = parseInt(s.zone_window_minutes, 10);
             s.zone_window_minutes = (wm >= 1 && wm <= 1440) ? wm : 15;
+            var c = parseFloat(s.confidence);
+            s.confidence = (isFinite(c) && c >= 0 && c <= 1) ? c : 0.5;
+            s.detect_faces = s.detect_faces !== false;
           });
         }
         render();

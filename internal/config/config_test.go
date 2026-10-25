@@ -354,6 +354,56 @@ func TestValidateSourcesAndConfidence(t *testing.T) {
 	}
 }
 
+func TestValidateLogLevel(t *testing.T) {
+	withLevel := func(level string) Watcher {
+		return Watcher{LogLevel: level, Streams: []Stream{{ID: "a", RTSPURL: "rtsp://h", TargetFPS: 10}}}
+	}
+	for _, ok := range []string{"", "debug", "info", "warn", "warning", "error", "critical", "WARN", "Info"} {
+		if err := withLevel(ok).Validate(); err != nil {
+			t.Fatalf("log_level %q rejected: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"verbose", "trace", "quiet", "0", "off"} {
+		if err := withLevel(bad).Validate(); err == nil {
+			t.Fatalf("invalid log_level %q accepted", bad)
+		}
+	}
+}
+
+func TestLoadParsesLogLevelAndDetectFaces(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "w.json")
+	body := `{"log_level":"warn","streams":[{"id":"a","rtsp_url":"rtsp://x/y","detect_faces":false}]}`
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.LogLevel != "warn" {
+		t.Errorf("LogLevel = %q, want warn", w.LogLevel)
+	}
+	if w.Streams[0].DetectFaces == nil || *w.Streams[0].DetectFaces != false {
+		t.Errorf("DetectFaces = %v, want explicit false", w.Streams[0].DetectFaces)
+	}
+}
+
+func TestLoadDetectFacesOmittedIsNil(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "w.json")
+	if err := os.WriteFile(p, []byte(`{"streams":[{"id":"a","rtsp_url":"rtsp://x/y"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Streams[0].DetectFaces != nil {
+		t.Errorf("omitted detect_faces should be nil, got %v", *w.Streams[0].DetectFaces)
+	}
+}
+
 func TestLightOmittedIsValid(t *testing.T) {
 	w := Watcher{Streams: []Stream{{ID: "a", RTSPURL: "rtsp://h/live", TargetFPS: 10}}}
 	if err := w.Validate(); err != nil {

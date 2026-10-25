@@ -160,13 +160,14 @@ Configuring more streams than a tier's capacity is a startup warning, not a fail
 
 ### `config.json`
 
-The single operator-facing file, with three top-level sections — `streams` (required), `mediamtx` (optional), and `engine` (optional). Strict parsing: no comments, no unknown keys.
+The single operator-facing file. Top-level sections: `streams` (required), `mediamtx` (optional), `engine` (optional), and `log_level` (optional). Strict parsing: no comments, no unknown keys.
 
 | Field | Required | Notes |
 |-------|----------|-------|
 | `streams` | yes | The list of cameras to run, one engine each (fields below). |
 | `mediamtx` | no | `{ "enabled": bool, "config": "<path>" }` — run the bundled on-player RTSPS proxy. Default off. See [Running the proxy on the player](#running-the-proxy-on-the-player-optional). |
 | `engine` | no | The per-stream engine template (models, thresholds, MQTT, logging). Omit to inherit the packaged default; include to override it. Rendered per stream, with `confidence`/`zone`/`target_fps`/`rtsp_url` applied on top. |
+| `log_level` | no | Global engine log verbosity: `debug`, `info`, `warn`, `error`, or `critical`. Omit to inherit the template (`info`). Set `warn` to silence the engine's continuous per-event INFO logs. Applies to every stream's engine process. |
 | `streams[].id` | yes | Unique, `^[A-Za-z0-9_-]+$`. Becomes the MQTT topic and preview port index. |
 | `streams[].rtsp_url` | source* | The camera/proxy RTSP URL. |
 | `streams[].file_path` | source* | A local video file to analyze instead of a live feed (test/offline). |
@@ -176,6 +177,7 @@ The single operator-facing file, with three top-level sections — `streams` (re
 | `streams[].usb_fps` | no | USB capture frame rate. Only with `usb: true`; omit for the engine default. |
 | `streams[].target_fps` | no | Default `10`; intended range 5–10. Caps NPU load. |
 | `streams[].confidence` | no | Person-detection threshold, `0.0`–`1.0`. Omit for the engine default (`0.5`). See [Detection confidence](#detection-confidence). |
+| `streams[].detect_faces` | no | `false` disables face detection (RetinaFace) on this stream, cutting NPU/CPU load; person detection, tracking, and zones keep running, but gaze/attention go empty. Omit (or `true`) to keep faces on. |
 | `streams[].zone` | no | Custom "important area" as `[x0,y0,x1,y1]`, normalized 0..1. When set, each track reports `in_zone`. Draw it with the on-player dashboard (`:20300`) or `tools/zone-picker.html`. |
 | `streams[].light` | no | Light/dark detection settings (`enabled`, `interval_seconds`, thresholds, ...). Defaults apply to omitted fields. See [Light/dark detection](#lightdark-detection). |
 | `streams[].zone_mode` | no | How a box is tested against the zone: `any` (default) — any part of the box overlapping the zone counts; `base` — only when the box's feet (bottom-centre) are inside. |
