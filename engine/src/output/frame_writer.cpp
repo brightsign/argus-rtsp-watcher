@@ -1,6 +1,7 @@
 #include "output/frame_writer.h"
 #include "output/face_blur.h"
 #include "pipeline/pipeline_types.h"
+#include "orchestration/letterbox.h"
 #include "metrics/log_global.h"
 #include "util/spsc_queue.h"
 #include <opencv2/imgcodecs.hpp>
@@ -94,20 +95,16 @@ public:
       // Crop letterbox (remove black bars) if original dimensions are available
       if (result.frame_width > 0 && result.frame_height > 0 &&
           output_img.cols > 0 && output_img.rows > 0) {
-        // Calculate letterbox region (same logic as resize_frame_rga)
-        const float scale = std::min((float)output_img.cols / result.frame_width,
-                                     (float)output_img.rows / result.frame_height);
-        const int letterbox_w = (int)(result.frame_width * scale);
-        const int letterbox_h = (int)(result.frame_height * scale);
-        const int offset_x = (output_img.cols - letterbox_w) / 2;
-        const int offset_y = (output_img.rows - letterbox_h) / 2;
+        // Letterbox region of the camera frame inside this canvas
+        const letterbox::Geometry geometry = letterbox::compute(
+            result.frame_width, result.frame_height, output_img.cols, output_img.rows);
 
         // Crop to letterbox region (removes black bars)
-        if (letterbox_w > 0 && letterbox_h > 0 &&
-            offset_x >= 0 && offset_y >= 0 &&
-            offset_x + letterbox_w <= output_img.cols &&
-            offset_y + letterbox_h <= output_img.rows) {
-          cv::Rect crop_region(offset_x, offset_y, letterbox_w, letterbox_h);
+        if (geometry.content_w > 0 && geometry.content_h > 0 &&
+            geometry.pad_x >= 0 && geometry.pad_y >= 0 &&
+            geometry.pad_x + geometry.content_w <= output_img.cols &&
+            geometry.pad_y + geometry.content_h <= output_img.rows) {
+          cv::Rect crop_region(geometry.pad_x, geometry.pad_y, geometry.content_w, geometry.content_h);
           output_img = output_img(crop_region).clone();
         }
       }
@@ -249,18 +246,14 @@ public:
       // Crop letterbox (remove black bars) if original dimensions are available
       if (result.frame_width > 0 && result.frame_height > 0 &&
           output_img.cols > 0 && output_img.rows > 0) {
-        const float scale = std::min((float)output_img.cols / result.frame_width,
-                                     (float)output_img.rows / result.frame_height);
-        const int letterbox_w = (int)(result.frame_width * scale);
-        const int letterbox_h = (int)(result.frame_height * scale);
-        const int offset_x = (output_img.cols - letterbox_w) / 2;
-        const int offset_y = (output_img.rows - letterbox_h) / 2;
-        
-        if (letterbox_w > 0 && letterbox_h > 0 &&
-            offset_x >= 0 && offset_y >= 0 &&
-            offset_x + letterbox_w <= output_img.cols &&
-            offset_y + letterbox_h <= output_img.rows) {
-          cv::Rect crop_region(offset_x, offset_y, letterbox_w, letterbox_h);
+        const letterbox::Geometry geometry = letterbox::compute(
+            result.frame_width, result.frame_height, output_img.cols, output_img.rows);
+
+        if (geometry.content_w > 0 && geometry.content_h > 0 &&
+            geometry.pad_x >= 0 && geometry.pad_y >= 0 &&
+            geometry.pad_x + geometry.content_w <= output_img.cols &&
+            geometry.pad_y + geometry.content_h <= output_img.rows) {
+          cv::Rect crop_region(geometry.pad_x, geometry.pad_y, geometry.content_w, geometry.content_h);
           output_img = output_img(crop_region).clone();
         }
       }

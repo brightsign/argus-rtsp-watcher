@@ -37,6 +37,7 @@ struct WorkerConfig {
     int model_input_width;     // Model input size
     int model_input_height;
     std::string model_name;    // For logging
+    std::string device_id;     // Camera name, tagged on timing log lines
     output::BlurConfig blur_config;  // Person blur configuration (applied before drawing boxes)
     bool flip_horizontal{false};     // Flip output frame left-right (mirror correction)
     bool enable_frame_stamp{true};   // Burn human+machine-readable frame_seq/frame_ts stamp into output frames

@@ -1,5 +1,6 @@
 #include "input/input_rtsp.h"
 #include "metrics/log_global.h"
+#include "metrics/stage_stats.h"
 #include <atomic>
 #include <thread>
 #include <chrono>
@@ -270,6 +271,7 @@ static std::vector<std::string> build_rtsp_pipelines(const std::string& url_in) 
 // ===============================
 class RtspNv12Helper {
 public:
+    explicit RtspNv12Helper(std::string label) : label_(std::move(label)) {}
     ~RtspNv12Helper() { close(); }
 
     bool open(const std::string& url, int first_frame_timeout_ms = 10000) {
@@ -454,6 +456,8 @@ public:
             uint8_t* uv_ptr    = (uint8_t*)GST_VIDEO_FRAME_PLANE_DATA(&vframe, 1);
             int      uv_stride = (int)GST_VIDEO_FRAME_PLANE_STRIDE(&vframe, 1);
 
+            const int64_t convert_start_ns = metrics::steady_now_ns();
+
             static std::vector<uint8_t> nv12_full;
             bool stride_ok = (y_stride == W) && (uv_stride == W);
             bool contiguous = stride_ok && (uv_ptr == y_ptr + (size_t)y_stride * H);
@@ -501,6 +505,8 @@ public:
                 ok = true;
             } while(false);
 
+            record_convert_time(metrics::steady_now_ns() - convert_start_ns, W, H);
+
             gst_video_frame_unmap(&vframe);
             gst_sample_unref(sample);
             return ok;
@@ -527,6 +533,21 @@ public:
     }
 
 private:
+    // Accumulates the NV12 -> full-resolution BGR convert cost (RGA, or the
+    // OpenCV fallback) and logs one summary per window at debug level, with
+    // the frame size so the cost can be read against the megapixel count.
+    void record_convert_time(int64_t duration_ns, int width, int height) {
+        constexpr int64_t kTimingWindowNs = 1000000000LL;
+        convert_stats_.add_ns(duration_ns);
+        const int64_t now_ns = metrics::steady_now_ns();
+        if (now_ns - convert_window_start_ns_ < kTimingWindowNs) return;
+        LG_DEBUG("input_rtsp: NV12->BGR convert ms avg/max %.1f/%.1f device=%s frames=%llu size=%dx%d",
+                 convert_stats_.average_ms(), convert_stats_.max_ms(), label_.c_str(),
+                 (unsigned long long)convert_stats_.count(), width, height);
+        convert_stats_.reset();
+        convert_window_start_ns_ = now_ns;
+    }
+
     GstElement* pipeline_ = nullptr;
     GstElement* appsink_  = nullptr;
     GstBus*     bus_      = nullptr;
@@ -535,6 +556,10 @@ private:
 
     std::vector<uint8_t> nv12_small_;
     std::vector<uint8_t> rgb_scratch_;
+
+    const std::string label_;
+    metrics::StageStats convert_stats_;
+    int64_t convert_window_start_ns_{0};
 
     std::thread bus_thread_;
     std::atomic<bool> bus_running_{false};
@@ -559,7 +584,7 @@ struct RtspInputSource::Impl {
   int frame_h_{0};
   
   Impl(const std::string& u, const RtspOptions& o) 
-    : url(u), opts(o), rtsp_helper(new RtspNv12Helper) {}
+    : url(u), opts(o), rtsp_helper(new RtspNv12Helper(o.label)) {}
 };
 
 RtspInputSource::RtspInputSource(std::string url, RtspOptions opts)

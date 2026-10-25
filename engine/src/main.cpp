@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
     
     // ---- logging (initial setup - use /tmp to avoid boot-time SD mount race) ----
     FileRotatingLogger::Config logcfg;
-    logcfg.path = "/tmp/gaze.log";
+    logcfg.path = kEngineLogFallbackPath;
     logcfg.max_mb = 5;
     logcfg.max_files = 5;
     logcfg.min_level = LogLevel::Info;  // Start with Info, will be updated from config
@@ -181,7 +181,7 @@ int main(int argc, char** argv) {
 
     // Re-initialize logger to configured log_dir if specified
     if (!appcfg.log_dir.empty()) {
-      std::string log_path = appcfg.log_dir + "/gaze.log";
+      std::string log_path = appcfg.log_dir + "/" + kEngineLogFileName;
       FileRotatingLogger::Config cfg2;
       cfg2.path      = log_path;
       cfg2.max_mb    = 5;
@@ -193,7 +193,7 @@ int main(int argc, char** argv) {
         flog = flog2;
         LG_INFO("Logger switched to: %s", log_path.c_str());
       } else {
-        LG_WARN("Could not open log at %s, keeping /tmp/gaze.log", log_path.c_str());
+        LG_WARN("Could not open log at %s, keeping %s", log_path.c_str(), kEngineLogFallbackPath);
       }
     }
 

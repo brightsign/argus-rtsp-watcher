@@ -11,6 +11,7 @@ struct RtspOptions {
   int drop_on_lag_ms{500};      // drop late frames to keep up
   int reconnect_backoff_ms{500};
   int reconnect_backoff_max_ms{5000};
+  std::string label{};          // camera name tagged on timing log lines
 };
 
 class RtspInputSource final : public IInputSource {

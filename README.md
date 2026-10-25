@@ -167,7 +167,7 @@ The single operator-facing file. Top-level sections: `streams` (required), `medi
 | `streams` | yes | The list of cameras to run, one engine each (fields below). |
 | `mediamtx` | no | `{ "enabled": bool, "config": "<path>" }` — run the bundled on-player RTSPS proxy. Default off. See [Running the proxy on the player](#running-the-proxy-on-the-player-optional). |
 | `engine` | no | The per-stream engine template (models, thresholds, MQTT, logging). Omit to inherit the packaged default; include to override it. Rendered per stream, with `confidence`/`zone`/`target_fps`/`rtsp_url` applied on top. |
-| `log_level` | no | Global engine log verbosity: `debug`, `info`, `warn`, `error`, or `critical`. Omit to inherit the template (`info`). Set `warn` to silence the engine's continuous per-event INFO logs. Applies to every stream's engine process. |
+| `log_level` | no | Global engine log verbosity: `debug`, `info`, `warn`, `error`, or `critical`. Omit to inherit the template (`info`). Set `warn` to silence the engine's continuous per-event INFO logs. Set `debug` for performance diagnosis: it adds one line per second per stream with the cost of each stage (`input_rtsp: NV12->BGR convert`, `capture_loop: stage ms`, `inference_worker: stage ms`, as avg/max milliseconds). Applies to every stream's engine process. |
 | `streams[].id` | yes | Unique, `^[A-Za-z0-9_-]+$`. Becomes the MQTT topic and preview port index. |
 | `streams[].rtsp_url` | source* | The camera/proxy RTSP URL. |
 | `streams[].file_path` | source* | A local video file to analyze instead of a live feed (test/offline). |

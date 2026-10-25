@@ -1,4 +1,5 @@
 #include "models/model_runner_yolox.h"
+#include "orchestration/letterbox.h"
 #include "metrics/log_global.h"
 #include <cstring>
 #include <chrono>
@@ -217,17 +218,14 @@ bool RKNNYoloXRunner::infer(const FrameView& in, InferenceOutputs& out) noexcept
     
     // Compute letterbox parameters used during preprocessing
     // For 640x480 camera -> 320x320 model: scale=0.5, letterbox=320x240, pad=(0,40)
-    const float scale = std::min(float(model_w) / orig_w, float(model_h) / orig_h);
-    const int letterbox_w = int(orig_w * scale);
-    const int letterbox_h = int(orig_h * scale);
-    const int pad_x = (model_w - letterbox_w) / 2;
-    const int pad_y = (model_h - letterbox_h) / 2;
-    
+    const letterbox::Geometry geometry = letterbox::compute(orig_w, orig_h, model_w, model_h);
+
     // V6.2.3.2: Debug logging (first 3 frames only)
     static int debug_deletter_count = 0;
     if (debug_deletter_count < 3 && p_->od_results.count > 0) {
         LG_DEBUG("[YOLOX] De-letterbox: orig=%dx%d model=%dx%d scale=%.3f letterbox=%dx%d pad=(%d,%d)",
-                orig_w, orig_h, model_w, model_h, scale, letterbox_w, letterbox_h, pad_x, pad_y);
+                orig_w, orig_h, model_w, model_h, geometry.scale,
+                geometry.content_w, geometry.content_h, geometry.pad_x, geometry.pad_y);
         debug_deletter_count++;
     }
     
@@ -242,10 +240,10 @@ bool RKNNYoloXRunner::infer(const FrameView& in, InferenceOutputs& out) noexcept
         
         // De-letterbox: remove padding, scale back to original frame
         Detection d;
-        d.x0 = (x0_letter - pad_x) / scale;
-        d.y0 = (y0_letter - pad_y) / scale;
-        d.x1 = (x1_letter - pad_x) / scale;
-        d.y1 = (y1_letter - pad_y) / scale;
+        d.x0 = geometry.to_source_x(x0_letter);
+        d.y0 = geometry.to_source_y(y0_letter);
+        d.x1 = geometry.to_source_x(x1_letter);
+        d.y1 = geometry.to_source_y(y1_letter);
         
         // V6.2.3.5.2: Debug - log what we're getting from RKNN BEFORE assignment
         if (debug_deletter_count <= 3 && i < 2) {

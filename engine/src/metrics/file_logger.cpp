@@ -31,7 +31,7 @@ FileRotatingLogger::FileRotatingLogger(const Config& cfg) noexcept
   std::lock_guard<std::mutex> lg(mu_);
   if (path_.rfind("/storage/sd/",0)==0) ensure_dir("/storage/sd/logs");
   if (!open_file_unlocked(path_)) {
-    path_ = "/tmp/gaze.log";
+    path_ = kEngineLogFallbackPath;
     open_file_unlocked(path_);
   }
 }
@@ -104,7 +104,7 @@ void FileRotatingLogger::rotate_if_needed_unlocked() noexcept {
 
   std::fclose(fp_); fp_ = nullptr;
 
-  // gaze.log.N <- ... <- gaze.log.1 <- gaze.log
+  // engine.log.N <- ... <- engine.log.1 <- engine.log
   for (int i = max_files_-1; i >= 1; --i) {
     char src[512], dst[512];
     std::snprintf(src, sizeof(src), "%s.%d", path_.c_str(), i);

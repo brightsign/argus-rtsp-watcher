@@ -17,6 +17,7 @@
 #include "health/health_manager.h"
 #include "metrics/file_logger.h"
 #include "metrics/log_global.h"
+#include "metrics/stage_stats.h"
 #include "models/model_factory.h"
 #include "models/model_runner.h"
 #include "models/model_runner_retinaface.h"
@@ -207,7 +208,17 @@ bool Orchestrator::switch_input(const InputConfig& new_input) noexcept {
 }
 
 bool Orchestrator::build_pipeline() noexcept {
+  // Get device ID from config, or auto-detect from system (MAC address, serial, hostname)
+  if (!cfg_.device_id.empty()) {
+    device_id_ = cfg_.device_id;
+    LG_INFO("[orch] Using device ID from config: %s\n", device_id_.c_str());
+  } else {
+    device_id_ = device_info::get_device_id("BS-UNKNOWN");
+    LG_INFO("[orch] Auto-detected device ID: %s\n", device_id_.c_str());
+  }
+
   resolve_usb_device(cfg_.input);
+  cfg_.input.rtsp.label = device_id_;
   std::unique_ptr<IInputSource> input_tmp;
   try { input_tmp = make_input(cfg_.input); } catch (...) { input_tmp.reset(); }
   if (!input_tmp) { LG_ERROR("[orch] failed to create input\n"); return false; }
@@ -324,16 +335,8 @@ bool Orchestrator::build_pipeline() noexcept {
   // Convert input to shared_ptr and assign to member variable
   input_  = std::shared_ptr<IInputSource>(std::move(input_tmp));
   
-  // Initialize device and stream identifiers before creating publishers
-  // Get device ID from config, or auto-detect from system (MAC address, serial, hostname)
-  if (!cfg_.device_id.empty()) {
-    device_id_ = cfg_.device_id;
-    LG_INFO("[orch] Using device ID from config: %s\n", device_id_.c_str());
-  } else {
-    device_id_ = device_info::get_device_id("BS-UNKNOWN");
-    LG_INFO("[orch] Auto-detected device ID: %s\n", device_id_.c_str());
-  }
-  
+  // Initialize the stream identifier before creating publishers
+  // (device_id_ was resolved at the top of build_pipeline so the input could be labeled with it)
   stream_id_ = cfg_.input.usb_device.empty() ? 
                cfg_.input.rtsp_url : cfg_.input.usb_device;
   if (stream_id_.empty() && !cfg_.input.file_path.empty()) {
@@ -1184,6 +1187,7 @@ bool Orchestrator::recover_pipeline(int64_t now_ns_val) noexcept {
     LG_INFO("recover_pipeline:rebuilding pipeline around %s\n", device_desc.c_str());
 
     std::unique_ptr<IInputSource> new_input_tmp;
+    cfg_.input.rtsp.label = device_id_;
     try { new_input_tmp = make_input(cfg_.input); } catch (...) { new_input_tmp.reset(); }
     if (!new_input_tmp) {
         LG_ERROR("recover_pipeline:failed to create input\n");
@@ -1292,6 +1296,14 @@ bool Orchestrator::recover_pipeline(int64_t now_ns_val) noexcept {
 void Orchestrator::capture_loop_threadfn() noexcept {
     LG_INFO("capture_loop:start");
 
+    // Per-window cost of the full-resolution copy into SharedFrame and of the
+    // light analyzer, summarized at debug level (log_level=debug). tryFetch is
+    // not timed here: it blocks for the next camera frame, so its duration is
+    // the frame interval, not a cost (the convert is timed in input_rtsp).
+    constexpr int64_t kTimingWindowNs = 1000000000LL;
+    metrics::StageStats copy_stats, light_stats;
+    int64_t timing_window_start_ns = metrics::steady_now_ns();
+
     while (!stop_capture_.load(std::memory_order_relaxed)) {
         // Try to fetch next frame from input source
         FrameView camView{};
@@ -1340,15 +1352,20 @@ void Orchestrator::capture_loop_threadfn() noexcept {
         }
 
         // Copy BGR data (this is the one place we duplicate pixel data)
+        const int64_t copy_start_ns = metrics::steady_now_ns();
         sf->bgr.resize(static_cast<size_t>(sf->width * sf->height * 3));
         if (camView.plane0) {
             std::memcpy(sf->bgr.data(), camView.plane0, sf->bgr.size());
         }
+        const int64_t copy_end_ns = metrics::steady_now_ns();
+        copy_stats.add_ns(copy_end_ns - copy_start_ns);
 
         // Wall-clock ms matches the frame_ts domain already published to consumers.
         if (light_analyzer_) {
             light_analyzer_->update(*sf, sf->capture_wall_ns / 1000000LL);
         }
+        const int64_t light_end_ns = metrics::steady_now_ns();
+        light_stats.add_ns(light_end_ns - copy_end_ns);
 
         // Fan out to enabled model mailboxes (lock-free post)
         // Only post to mailboxes that have active consumers
@@ -1363,6 +1380,18 @@ void Orchestrator::capture_loop_threadfn() noexcept {
 
         // Update heartbeat for supervisor
         last_heartbeat_ns_.store(now_ns(), std::memory_order_release);
+
+        if (light_end_ns - timing_window_start_ns >= kTimingWindowNs) {
+            LG_DEBUG("capture_loop: stage ms avg/max device=%s frames=%llu size=%dx%d "
+                     "copy=%.1f/%.1f light=%.1f/%.1f",
+                     device_id_.c_str(),
+                     (unsigned long long)copy_stats.count(), sf->width, sf->height,
+                     copy_stats.average_ms(), copy_stats.max_ms(),
+                     light_stats.average_ms(), light_stats.max_ms());
+            copy_stats.reset();
+            light_stats.reset();
+            timing_window_start_ns = light_end_ns;
+        }
     }
 
     LG_INFO("capture_loop:stop");
@@ -1389,6 +1418,7 @@ void Orchestrator::face_loop_threadfn() noexcept {
         config.model_input_width = face_runner_->spec().input_size.w;
         config.model_input_height = face_runner_->spec().input_size.h;
         config.model_name = "RetinaFace";
+        config.device_id = device_id_;
         config.flip_horizontal = cfg_.flip_horizontal;  // Mirror correction
         config.zone = cfg_.zone;  // full ZoneCfg incl. membership mode
 
@@ -1442,6 +1472,7 @@ void Orchestrator::yolo_loop_threadfn() noexcept {
         config.model_input_width = yolo_runner_->spec().input_size.w;
         config.model_input_height = yolo_runner_->spec().input_size.h;
         config.model_name = "YOLOX";
+        config.device_id = device_id_;
         config.blur_config = cfg_.blur_config;  // Pass blur config for person blur
         config.flip_horizontal = cfg_.flip_horizontal;  // Mirror correction
         config.enable_frame_stamp = cfg_.enable_frame_stamp;  // Burn frame_seq/frame_ts stamp

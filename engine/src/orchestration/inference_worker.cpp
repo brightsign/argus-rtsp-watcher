@@ -1,6 +1,7 @@
 #include "orchestration/inference_worker.h"
 #include "orchestration/visualization.h"
 #include "orchestration/frame_stamp.h"
+#include "orchestration/letterbox.h"
 #include "models/model_runner.h"
 #include "models/model_runner_retinaface.h"
 #include "models/model_runner_yolox.h"
@@ -11,6 +12,7 @@
 #include "image_utils.h"
 #include "common.h"
 #include "metrics/log_global.h"
+#include "metrics/stage_stats.h"
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <rga/rga.h>
@@ -220,13 +222,8 @@ static bool resize_frame_rga(
     // YOLOX expects letterboxed input (maintain aspect ratio + black padding)
     // Previous code was stretching/squashing, causing wrong detections
     
-    // Calculate letterbox parameters
-    float scale = std::min(float(dst_w) / src_w, float(dst_h) / src_h);
-    int letterbox_w = int(src_w * scale);
-    int letterbox_h = int(src_h * scale);
-    int pad_x = (dst_w - letterbox_w) / 2;
-    int pad_y = (dst_h - letterbox_h) / 2;
-    
+    const letterbox::Geometry geometry = letterbox::compute(src_w, src_h, dst_w, dst_h);
+
     // Resize destination buffer to target size and fill with black
     if (dst_buf.size() != size_t(dst_w) * dst_h * 3) {
         dst_buf.resize(size_t(dst_w) * dst_h * 3);
@@ -238,10 +235,10 @@ static bool resize_frame_rga(
     cv::Mat dst_full(dst_h, dst_w, CV_8UC3, dst_buf.data());
     
     // Create ROI in destination for the letterboxed image (skip padding area)
-    cv::Mat dst_roi = dst_full(cv::Rect(pad_x, pad_y, letterbox_w, letterbox_h));
-    
+    cv::Mat dst_roi = dst_full(cv::Rect(geometry.pad_x, geometry.pad_y, geometry.content_w, geometry.content_h));
+
     // Resize source to fit in ROI (maintains aspect ratio)
-    cv::resize(src_mat, dst_roi, cv::Size(letterbox_w, letterbox_h), 0, 0, cv::INTER_LINEAR);
+    cv::resize(src_mat, dst_roi, cv::Size(geometry.content_w, geometry.content_h), 0, 0, cv::INTER_LINEAR);
     
     return true;
 }
@@ -357,6 +354,16 @@ void run_inference_loop(
         zone::DetectCounter zone_counter;
         zone_counter.window_ms = std::max(1, config.zone.window_minutes) * 60000LL;
 
+        // Per-stage cost of each frame, summarized once per window at debug
+        // level (log_level=debug). The camera frame is full resolution, so this
+        // shows which full-resolution pass dominates before any is optimized.
+        // The writer drops two of every three frames, so write's average is a
+        // third of one encode and its max is the real per-encode cost.
+        constexpr int64_t kTimingWindowNs = 1000000000LL;
+        metrics::StageStats resize_stats, infer_stats, clone_stats, overlay_stats,
+                            post_stats, write_stats, frame_stats;
+        int64_t timing_window_start_ns = metrics::steady_now_ns();
+
         while (!stop_flag.load(std::memory_order_relaxed)) {
             // Get next frame from mailbox
             auto sf = frame_mailbox->takeFrame();
@@ -404,6 +411,8 @@ void run_inference_loop(
                 continue;
             }
 
+            const int64_t frame_start_ns = metrics::steady_now_ns();
+
             // Resize frame via RGA hardware accelerator (BGR24 → BGR24)
             if (!resize_frame_rga(sf->bgr, sf->width, sf->height,
                                   rgb_resized_buf, dst_w, dst_h)) {
@@ -411,6 +420,8 @@ void run_inference_loop(
                         (unsigned long long)sf->seq, config.model_name.c_str());
                 continue;
             }
+            const int64_t resize_end_ns = metrics::steady_now_ns();
+            resize_stats.add_ns(resize_end_ns - frame_start_ns);
 
             // Prepare input frame view
             FrameView fv_in{};
@@ -423,6 +434,8 @@ void run_inference_loop(
                         (unsigned long long)sf->seq, config.model_name.c_str());
                 continue;
             }
+            const int64_t infer_end_ns = metrics::steady_now_ns();
+            infer_stats.add_ns(infer_end_ns - resize_end_ns);
 
             // Store results in fusion output FIRST (before visualization)
             store_inference_results(runner, outs, fusion_output, sf->seq);
@@ -437,11 +450,15 @@ void run_inference_loop(
             if (config.flip_horizontal) {
                 cv::flip(vis_canvas, vis_canvas, 1);  // 1 = horizontal flip
             }
+            const int64_t clone_end_ns = metrics::steady_now_ns();
+            clone_stats.add_ns(clone_end_ns - infer_end_ns);
 
             visualization::process_inference_results(runner, vis_canvas, debug_frame_idx,
                                                      sf->orig_width, sf->orig_height, second_runner,
                                                      fusion_output, config.blur_config,
                                                      config.flip_horizontal, config.zone);
+            const int64_t overlay_end_ns = metrics::steady_now_ns();
+            overlay_stats.add_ns(overlay_end_ns - clone_end_ns);
 
             // (flip already applied above — no post-visualization flip needed)
 
@@ -465,10 +482,8 @@ void run_inference_loop(
                         const float pad_y = (model_size - sf->orig_height * s) / 2.0f;
 
                         // Step 2: Canvas letterbox parameters
-                        const float canvas_scale = std::min((float)dst_w / sf->orig_width,
-                                                           (float)dst_h / sf->orig_height);
-                        const int offset_x = (dst_w - (int)(sf->orig_width * canvas_scale)) / 2;
-                        const int offset_y = (dst_h - (int)(sf->orig_height * canvas_scale)) / 2;
+                        const letterbox::Geometry canvas =
+                            letterbox::compute(sf->orig_width, sf->orig_height, dst_w, dst_h);
 
                         result.tracks.reserve(fusion_output->face_dets.size());
                         for (size_t i = 0; i < fusion_output->face_dets.size(); ++i) {
@@ -482,10 +497,10 @@ void run_inference_loop(
 
                             // Scale: camera space -> canvas space
                             Track t;
-                            t.box.x0 = cx0 * canvas_scale + offset_x;
-                            t.box.y0 = cy0 * canvas_scale + offset_y;
-                            t.box.x1 = cx1 * canvas_scale + offset_x;
-                            t.box.y1 = cy1 * canvas_scale + offset_y;
+                            t.box.x0 = canvas.to_dest_x(cx0);
+                            t.box.y0 = canvas.to_dest_y(cy0);
+                            t.box.x1 = canvas.to_dest_x(cx1);
+                            t.box.y1 = canvas.to_dest_y(cy1);
                             t.box.score = det.score;
                             t.box.class_id = det.class_id;
 
@@ -501,10 +516,8 @@ void run_inference_loop(
                     // YOLOX runner), so only the camera -> canvas letterbox mapping
                     // is applied here.
                     if (!fusion_output->yolo_dets.empty()) {
-                        const float ycanvas_scale = std::min((float)dst_w / sf->orig_width,
-                                                             (float)dst_h / sf->orig_height);
-                        const int yoffset_x = (dst_w - (int)(sf->orig_width * ycanvas_scale)) / 2;
-                        const int yoffset_y = (dst_h - (int)(sf->orig_height * ycanvas_scale)) / 2;
+                        const letterbox::Geometry person_canvas =
+                            letterbox::compute(sf->orig_width, sf->orig_height, dst_w, dst_h);
 
                         result.person_tracks.reserve(fusion_output->yolo_dets.size());
                         for (const auto& det : fusion_output->yolo_dets) {
@@ -515,10 +528,10 @@ void run_inference_loop(
                             // Scale: camera space -> canvas space
                             TrackedBox tb{};
                             tb.id = -1;  // No tracking ID in this context
-                            tb.x0 = det.x0 * ycanvas_scale + yoffset_x;
-                            tb.y0 = det.y0 * ycanvas_scale + yoffset_y;
-                            tb.x1 = det.x1 * ycanvas_scale + yoffset_x;
-                            tb.y1 = det.y1 * ycanvas_scale + yoffset_y;
+                            tb.x0 = person_canvas.to_dest_x(det.x0);
+                            tb.y0 = person_canvas.to_dest_y(det.y0);
+                            tb.x1 = person_canvas.to_dest_x(det.x1);
+                            tb.y1 = person_canvas.to_dest_y(det.y1);
                             tb.score = det.score;
                             result.person_tracks.push_back(tb);
                         }
@@ -566,7 +579,35 @@ void run_inference_loop(
                     draw_frame_stamp(vis_canvas, sf->seq, sf->capture_wall_ns);
                 }
 
+                const int64_t write_start_ns = metrics::steady_now_ns();
+                post_stats.add_ns(write_start_ns - overlay_end_ns);
                 frame_writer->writeFrame(vis_canvas, result);
+                write_stats.add_ns(metrics::steady_now_ns() - write_start_ns);
+            }
+
+            const int64_t frame_end_ns = metrics::steady_now_ns();
+            frame_stats.add_ns(frame_end_ns - frame_start_ns);
+            if (frame_end_ns - timing_window_start_ns >= kTimingWindowNs) {
+                LG_DEBUG("inference_worker: stage ms avg/max device=%s (%s) frames=%llu "
+                         "resize=%.1f/%.1f infer=%.1f/%.1f clone=%.1f/%.1f "
+                         "overlay=%.1f/%.1f post=%.1f/%.1f write=%.1f/%.1f total=%.1f/%.1f",
+                         config.device_id.c_str(), config.model_name.c_str(),
+                         (unsigned long long)frame_stats.count(),
+                         resize_stats.average_ms(), resize_stats.max_ms(),
+                         infer_stats.average_ms(), infer_stats.max_ms(),
+                         clone_stats.average_ms(), clone_stats.max_ms(),
+                         overlay_stats.average_ms(), overlay_stats.max_ms(),
+                         post_stats.average_ms(), post_stats.max_ms(),
+                         write_stats.average_ms(), write_stats.max_ms(),
+                         frame_stats.average_ms(), frame_stats.max_ms());
+                resize_stats.reset();
+                infer_stats.reset();
+                clone_stats.reset();
+                overlay_stats.reset();
+                post_stats.reset();
+                write_stats.reset();
+                frame_stats.reset();
+                timing_window_start_ns = frame_end_ns;
             }
 
             // Log periodically
