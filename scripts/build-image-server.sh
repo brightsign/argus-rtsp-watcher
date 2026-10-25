@@ -31,6 +31,14 @@ UPSTREAM_BIN="${CLONE_DIR}/bin/image-stream-server-arm64"
 INDEX_PATCH="${REPO_ROOT}/scripts/patches/image-stream-server-index.html"
 INDEX_DST="${CLONE_DIR}/internal/server/static/index.html"
 
+# A patch to upstream's Go source: the video stream sends a frame only when it
+# has changed (plus a slow keepalive), instead of resending the cached frame on
+# every 30 Hz tick. The source updates a few times a second, so the browser was
+# decoding and painting the same JPEG about seven times for each new one. The
+# patch also adds tests, which `make test-image-server` runs. It is a diff, not a
+# replacement file, so it fails loudly if upstream changes the code it touches.
+SOURCE_PATCH="${REPO_ROOT}/scripts/patches/image-stream-server-send-on-change.patch"
+
 # Commit-tracking lets repeat builds skip the Go compile when nothing changed.
 COMMIT_FILE="${REPO_ROOT}/build/.image-stream-server-commit"
 
@@ -59,16 +67,34 @@ apply_patch() {
     fi
     echo "==> Applying preview UI patch"
     cp "${INDEX_PATCH}" "${INDEX_DST}"
+
+    if [ ! -f "${SOURCE_PATCH}" ]; then
+        echo "ERROR: missing source patch: ${SOURCE_PATCH}" >&2
+        exit 1
+    fi
+    # Put the files the patch touches back to upstream first, so applying is
+    # repeatable on a reused clone (FORCE_UPDATE resets tracked files but leaves
+    # the untracked test file the patch adds).
+    git -C "${CLONE_DIR}" checkout -- internal/server/handlers.go
+    rm -f "${CLONE_DIR}/internal/server/send_on_change_test.go"
+    echo "==> Applying send-on-change patch"
+    if ! git -C "${CLONE_DIR}" apply "${SOURCE_PATCH}"; then
+        echo "ERROR: the send-on-change patch no longer applies to upstream ${IMAGE_SERVER_REF}." >&2
+        echo "  Upstream changed internal/server/handlers.go; regenerate" >&2
+        echo "  scripts/patches/image-stream-server-send-on-change.patch against the new code." >&2
+        exit 1
+    fi
 }
 
-# The embedded index.html is part of the binary, so a patch change must force a
-# rebuild even when the upstream commit is unchanged -- fold the patch hash into
-# the tracked identity.
+# The embedded index.html and the source patch are part of the binary, so a
+# change to either must force a rebuild even when the upstream commit is
+# unchanged -- fold both hashes into the tracked identity.
 current_identity() {
-    local commit patch_hash
+    local commit patch_hash source_hash
     commit="$(git -C "${CLONE_DIR}" rev-parse HEAD 2>/dev/null || echo "")"
     patch_hash="$(sha256sum "${INDEX_PATCH}" | awk '{print $1}')"
-    echo "${commit}:${patch_hash}"
+    source_hash="$(sha256sum "${SOURCE_PATCH}" | awk '{print $1}')"
+    echo "${commit}:${patch_hash}:${source_hash}"
 }
 
 build() {

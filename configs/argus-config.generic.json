@@ -74,6 +74,7 @@
 
   "enable_frame_output": false,
   "enable_frame_stamp": true,
+  "frame_output_stride": 1,
   "enable_camera_time": true,
   "output_dir": "/tmp",
 

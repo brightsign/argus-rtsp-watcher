@@ -38,6 +38,7 @@ namespace inference_worker {
 // Generic inference worker configuration
 struct WorkerConfig {
     int skip_frames;           // Process every Nth frame (1 = all, 2 = every other, etc)
+    int target_fps{0};         // Cap on frames started per second (0 = no cap); the worker waits for each slot
     int model_input_width;     // Model input size
     int model_input_height;
     std::string model_name;    // For logging

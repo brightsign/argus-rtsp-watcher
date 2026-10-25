@@ -168,6 +168,7 @@ The single operator-facing file. Top-level sections: `streams` (required), `medi
 | `mediamtx` | no | `{ "enabled": bool, "config": "<path>" }` — run the bundled on-player RTSPS proxy. Default off. See [Running the proxy on the player](#running-the-proxy-on-the-player-optional). |
 | `engine` | no | The per-stream engine template (models, thresholds, MQTT, logging). Omit to inherit the packaged default; include to override it. Rendered per stream, with `confidence`/`zone`/`target_fps`/`rtsp_url` applied on top. |
 | `log_level` | no | Global engine log verbosity: `debug`, `info`, `warn`, `error`, or `critical`. Omit to inherit the template (`info`). Set `warn` to silence the engine's continuous per-event INFO logs. Set `debug` for performance diagnosis: it adds one line per second per stream with the cost of each stage (`input_rtsp: NV12->BGR convert`, `capture_loop: stage ms`, `inference_worker: stage ms`, as avg/max milliseconds). Applies to every stream's engine process. Where the logs go, and how to read them, is under [Logs](#logs). |
+| `preview_stride` | no | Save one preview frame in every N processed frames: `1` (the default) updates the preview on every processed frame, `2` on every other, and so on, up to `30`. Higher values trade a choppier preview for less JPEG encoding. |
 | `streams[].id` | yes | Unique, `^[A-Za-z0-9_-]+$`. Becomes the MQTT topic and preview port index. |
 | `streams[].rtsp_url` | source* | The camera/proxy RTSP URL. |
 | `streams[].file_path` | source* | A local video file to analyze instead of a live feed (test/offline). |
@@ -175,7 +176,7 @@ The single operator-facing file. Top-level sections: `streams` (required), `medi
 | `streams[].usb_width` | no | USB capture width in pixels. Only with `usb: true`; omit for the engine default. |
 | `streams[].usb_height` | no | USB capture height in pixels. Only with `usb: true`; omit for the engine default. |
 | `streams[].usb_fps` | no | USB capture frame rate. Only with `usb: true`; omit for the engine default. |
-| `streams[].target_fps` | no | Default `10`; intended range 5–10. Caps NPU load. |
+| `streams[].target_fps` | no | Default `10`; intended range 5–10. The most often the engine starts inference on this stream. It waits for each slot and then takes the **newest** frame, so the NPU is not driven harder than asked and the frame it picks is as fresh as possible. A stream whose frames take longer than the slot simply runs slower; there is no catch-up burst. `0` removes the cap. |
 | `streams[].confidence` | no | Person-detection threshold, `0.0`–`1.0`. Omit for the engine default (`0.5`). See [Detection confidence](#detection-confidence). |
 | `streams[].detect_faces` | no | `false` disables face detection (RetinaFace) on this stream, cutting NPU/CPU load; person detection, tracking, and zones keep running, but gaze/attention go empty. Omit (or `true`) to keep faces on. |
 | `streams[].zone` | no | Custom "important area" as `[x0,y0,x1,y1]`, normalized 0..1. When set, each track reports `in_zone`. Draw it with the on-player dashboard (`:20300`) or `tools/zone-picker.html`. |
@@ -496,7 +497,7 @@ It does **not** cover anything after the fetch: waiting for the inference worker
 
 #### The 15-second average
 
-`avg15s` is the mean of `lag` over every frame the engine captured in the last 15 seconds, including the frame it is drawn on. It is taken over **all** captured frames, not only the ones that get drawn and saved to the preview, so it is smooth even though the preview shows only a fraction of the frames. It is rounded to the nearest millisecond (`lag` itself is truncated).
+`avg15s` is the mean of `lag` over every frame the engine captured in the last 15 seconds, including the frame it is drawn on. It is taken over **all** captured frames, not only the ones that get drawn and saved to the preview, so it is smooth even when `preview_stride` is above 1 and the preview shows only some of the frames. It is rounded to the nearest millisecond (`lag` itself is truncated).
 
 - It starts with the first frame after the engine starts, so for the first seconds it averages over fewer frames.
 - If no frame has a camera time for more than 15 seconds, the average starts over, and it disappears from the line together with `lag`.
@@ -646,7 +647,9 @@ The repo has **no dependency on a sibling Argus tree**. Every runtime asset is p
 | `make build-mosquitto` | the mosquitto broker (from source) + client tools | SDK |
 | `make build-libs` | the runtime `lib/` tree (OpenCV/GStreamer/RGA/RKNN/TurboJPEG), harvested from the SDK sysroot | SDK |
 | `make build-models` | `RetinaFace.rknn` + `yolox_s.rknn` per SoC + coco labels, compiled from upstream ONNX | **Docker** + ~10GB + network |
-| `make build-image-server` | the MJPEG preview server (from its upstream repo) | `git` + `go` + network |
+| `make build-image-server` | the MJPEG preview server (from its upstream repo, with this repo's preview page and source patch applied) | `git` + `go` + network |
+
+The **preview server** is upstream's code plus two things kept in [`scripts/patches/`](scripts/patches): the preview page, and a source patch that makes the video stream send a frame only when it changes (plus a slow keepalive) instead of resending the cached frame on every 30 Hz tick, which had the browser decoding the same JPEG about seven times per new frame. The patch is a diff, so the build fails loudly if upstream changes the code it touches. `make test-image-server` runs the tests for the patched package.
 
 The **RKNN headers and runtime** are not vendored: the Rockchip RKNN API headers and `librknnrt.so` are fetched from the pinned upstream (`airockchip/rknn-toolkit2` `v2.3.0`) by `make prep` into `engine/include/` (a prerequisite of the engine build), so no Rockchip-proprietary bytes live in this repo.
 
@@ -732,6 +735,7 @@ docs/               DESIGN.md, bounding-boxes.md, HARDWARE-VALIDATION.md
 | `over_capacity: true` in health | More streams than the SoC tier supports (see the hardware table). |
 | Player unreachable on preview ports | Open inbound `20200..20200+N-1`. |
 
+| Startup log shows `stream not available yet (server says not found)` | Normal at boot: MediaMTX is still connecting to the camera, and the engine retries the same hardware-decode pipeline for up to a minute instead of falling back to software. If it ends with `giving up`, the camera never became available through MediaMTX. |
 | A stream's preview is frozen | `grep -a "recover_pipeline" /tmp/<id>.log`. If a step "stalled", the engine ended itself and the watcher restarted it; look for `[<id>]` lines in `main.log` around that time. |
 
 Logs: see [Logs](#logs). `tail -f /tmp/main.log` for the watcher and everything it runs, `tail -f /tmp/<id>.log` for one stream.

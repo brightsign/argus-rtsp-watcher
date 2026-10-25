@@ -354,6 +354,57 @@ func TestValidateSourcesAndConfidence(t *testing.T) {
 	}
 }
 
+func TestValidatePreviewStride(t *testing.T) {
+	withStride := func(n *int) Watcher {
+		return Watcher{PreviewStride: n, Streams: []Stream{{ID: "a", RTSPURL: "rtsp://h", TargetFPS: 10}}}
+	}
+	for _, ok := range []int{1, 2, 3, 10, MaxPreviewStride} {
+		n := ok
+		if err := withStride(&n).Validate(); err != nil {
+			t.Fatalf("preview_stride %d rejected: %v", ok, err)
+		}
+	}
+	if err := withStride(nil).Validate(); err != nil {
+		t.Fatalf("omitted preview_stride rejected: %v", err)
+	}
+	for _, bad := range []int{0, -1, MaxPreviewStride + 1, 1000} {
+		n := bad
+		if err := withStride(&n).Validate(); err == nil {
+			t.Fatalf("invalid preview_stride %d accepted", bad)
+		}
+	}
+}
+
+func TestLoadParsesPreviewStride(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "w.json")
+	if err := os.WriteFile(p, []byte(`{"preview_stride":2,"streams":[{"id":"a","rtsp_url":"rtsp://x/y"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.PreviewStride == nil || *w.PreviewStride != 2 {
+		t.Errorf("PreviewStride = %v, want 2", w.PreviewStride)
+	}
+}
+
+func TestLoadLeavesPreviewStrideNilWhenOmitted(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "w.json")
+	if err := os.WriteFile(p, []byte(`{"streams":[{"id":"a","rtsp_url":"rtsp://x/y"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.PreviewStride != nil {
+		t.Errorf("omitted preview_stride should be nil, got %d", *w.PreviewStride)
+	}
+}
+
 func TestEngineLogDir(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

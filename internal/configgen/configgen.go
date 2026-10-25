@@ -23,6 +23,7 @@ type Options struct {
 	MQTTPort      int
 	FramesBaseDir string
 	LogLevel      string // global engine log verbosity; empty leaves the template's value
+	PreviewStride *int   // save one preview frame in every N processed frames; nil leaves the template's value
 }
 
 // Topic returns the per-stream MQTT topic for a stream id.
@@ -55,6 +56,12 @@ func Render(s config.Stream, o Options) ([]byte, error) {
 	// every stream's engine process; otherwise the template's value stands.
 	if o.LogLevel != "" {
 		m["log_level"] = o.LogLevel
+	}
+
+	// Global preview cadence: an explicit stride overrides the template's, the
+	// same way log_level does.
+	if o.PreviewStride != nil {
+		m["frame_output_stride"] = *o.PreviewStride
 	}
 
 	// Per-stream face-detection toggle. Only an explicit value overrides the

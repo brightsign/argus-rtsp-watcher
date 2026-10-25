@@ -1,5 +1,6 @@
 #include "output/frame_writer.h"
 #include "output/face_blur.h"
+#include "output/frame_stride.h"
 #include "pipeline/pipeline_types.h"
 #include "orchestration/letterbox.h"
 #include "metrics/log_global.h"
@@ -53,9 +54,9 @@ public:
 class DiskFrameWriter final : public IFrameWriter {
 public:
   DiskFrameWriter(const std::string& output_dir, int max_frames, int quality,
-                  const output::BlurConfig& blur_config) noexcept
+                  const output::BlurConfig& blur_config, int stride) noexcept
     : output_dir_(output_dir), max_frames_(max_frames), quality_(quality),
-      blur_config_(blur_config), frame_count_(0),
+      blur_config_(blur_config), stride_(stride), frame_stride_(stride),
       writes_count_(0), last_log_time_(std::chrono::steady_clock::now()) {
     try {
       fs::create_directories(output_dir_);
@@ -76,9 +77,9 @@ public:
       return false;
     }
 
-    // Skip most frames for performance (CPU optimization: reduce I/O)
-    // Only write every 3rd frame to match working_1 baseline (10 FPS output)
-    if ((frame_count_++ % 3) != 0) {
+    // Save one frame in every `stride`. Skipped frames cost nothing here; the
+    // frames that are saved are as fresh as the worker made them.
+    if (!frame_stride_.admit()) {
       return true;
     }
 
@@ -127,8 +128,8 @@ public:
       
       if (elapsed_ms >= 1000) {
         float write_fps = (elapsed_ms > 0) ? (1000.0f * writes_count_ / elapsed_ms) : 0.0f;
-        LG_INFO("frame_writer: performance metrics (writes=%d, fps=%.1f, skip_ratio=1:3)",
-                writes_count_, write_fps);
+        LG_INFO("frame_writer: performance metrics (writes=%d, fps=%.1f, stride=%d)",
+                writes_count_, write_fps, stride_);
         writes_count_ = 0;
         last_log_time_ = now;
       }
@@ -151,7 +152,8 @@ private:
   int max_frames_;
   int quality_;
   output::BlurConfig blur_config_;
-  int frame_count_;
+  int stride_;
+  output::FrameStride frame_stride_;
   int writes_count_;
   std::chrono::steady_clock::time_point last_log_time_;
 };
@@ -171,9 +173,9 @@ public:
   };
   
   AsyncDiskFrameWriter(const std::string& output_dir, int max_frames, int quality,
-                       const output::BlurConfig& blur_config, size_t queue_size) noexcept
+                       const output::BlurConfig& blur_config, size_t queue_size, int stride) noexcept
     : output_dir_(output_dir), max_frames_(max_frames), quality_(quality),
-      blur_config_(blur_config), frame_count_(0), 
+      blur_config_(blur_config), frame_stride_(stride), 
       running_(false), dropped_frames_(0), total_enqueued_(0) {
     
     // Validate queue size is power of 2
@@ -227,8 +229,8 @@ public:
       return false;
     }
     
-    // Skip frames for performance (match baseline: write every 3rd frame)
-    if ((frame_count_++ % 3) != 0) {
+    // Save one frame in every `stride` (see DiskFrameWriter).
+    if (!frame_stride_.admit()) {
       return true;
     }
     
@@ -358,7 +360,7 @@ private:
   int max_frames_;
   int quality_;
   output::BlurConfig blur_config_;
-  int frame_count_;
+  output::FrameStride frame_stride_;
   
   // Async components
   SPSCQueue<FrameData, 16> queue_;  // Lock-free queue (power of 2 capacity)
@@ -378,8 +380,9 @@ std::unique_ptr<IFrameWriter> make_frame_writer_disk(
     const std::string& output_dir,
     int max_frames,
     int quality,
-    const output::BlurConfig& blur_config) noexcept {
-  return std::make_unique<DiskFrameWriter>(output_dir, max_frames, quality, blur_config);
+    const output::BlurConfig& blur_config,
+    int stride) noexcept {
+  return std::make_unique<DiskFrameWriter>(output_dir, max_frames, quality, blur_config, stride);
 }
 
 std::unique_ptr<IFrameWriter> make_frame_writer_disk_async(
@@ -387,6 +390,7 @@ std::unique_ptr<IFrameWriter> make_frame_writer_disk_async(
     int max_frames,
     int quality,
     const output::BlurConfig& blur_config,
-    size_t queue_size) noexcept {
-  return std::make_unique<AsyncDiskFrameWriter>(output_dir, max_frames, quality, blur_config, queue_size);
+    size_t queue_size,
+    int stride) noexcept {
+  return std::make_unique<AsyncDiskFrameWriter>(output_dir, max_frames, quality, blur_config, queue_size, stride);
 }

@@ -48,6 +48,8 @@ struct PipelineConfig {
   std::string output_dir;           // Directory for decorated frames
   int max_frames = 0;               // Max frames to keep (0 = no limit)
   int frame_quality = 85;           // JPEG quality (1-100)
+  int frame_output_stride = 1;      // Save one preview frame in every N processed frames
+  int target_fps = 30;              // Cap on frames each inference worker starts per second (0 = no cap)
   bool enable_frame_stamp = true;   // Burn frame_seq/frame_ts stamp into decorated frames
   bool enable_camera_time = true;   // Recover camera capture time from RTCP sender reports (RTSP only)
 

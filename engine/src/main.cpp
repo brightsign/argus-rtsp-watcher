@@ -329,6 +329,8 @@ int main(int argc, char** argv) {
     pc.output_dir = appcfg.output_dir;
     pc.max_frames = appcfg.max_frames;
     pc.frame_quality = appcfg.frame_quality;
+    pc.frame_output_stride = appcfg.frame_output_stride;
+    pc.target_fps = appcfg.runtime.target_fps;
     pc.enable_frame_stamp = appcfg.enable_frame_stamp;
     pc.enable_camera_time = appcfg.enable_camera_time;
 

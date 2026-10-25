@@ -15,6 +15,11 @@ import (
 // DefaultTargetFPS caps per-stream capture when a stream omits target_fps.
 const DefaultTargetFPS = 10
 
+// MaxPreviewStride bounds preview_stride: beyond it the preview would update
+// less than once in a few seconds at ordinary frame rates, which is a stalled
+// picture, not a lighter one.
+const MaxPreviewStride = 30
+
 // LogLevels is the set of engine logging verbosities config.json may request
 // (case-insensitive), kept in sync with the engine's parser in main.cpp. An
 // empty log_level inherits the engine template's own value (packaged default
@@ -189,6 +194,10 @@ type Watcher struct {
 	Mediamtx Mediamtx        `json:"mediamtx"`
 	Engine   json.RawMessage `json:"engine"`
 	LogLevel string          `json:"log_level"` // optional global engine log verbosity; empty inherits the template default ("info")
+	// PreviewStride saves one preview frame in every N processed frames (1 = every
+	// frame). Nil inherits the engine default, every frame. Higher values trade a
+	// choppier preview for less encoding work.
+	PreviewStride *int `json:"preview_stride"`
 }
 
 // MediamtxSearchPaths returns the mediamtx.yml discovery order, first-found-wins.
@@ -334,6 +343,9 @@ func (w Watcher) Validate() error {
 	}
 	if w.LogLevel != "" && !LogLevels[strings.ToLower(w.LogLevel)] {
 		return fmt.Errorf("log_level = %q must be one of debug, info, warn, error, critical", w.LogLevel)
+	}
+	if w.PreviewStride != nil && (*w.PreviewStride < 1 || *w.PreviewStride > MaxPreviewStride) {
+		return fmt.Errorf("preview_stride = %d is out of range [1,%d]", *w.PreviewStride, MaxPreviewStride)
 	}
 	seen := make(map[string]bool, len(w.Streams))
 	for _, s := range w.Streams {

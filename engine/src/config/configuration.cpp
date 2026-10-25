@@ -19,6 +19,10 @@ bool AppConfig::validate(char* err, size_t err_sz) const noexcept {
     if (err&&err_sz) std::snprintf(err, err_sz, "runtime invalid: %s", tmp);
     return false;
   }
+  if (frame_output_stride < 1) {
+    if (err&&err_sz) std::snprintf(err, err_sz, "frame_output_stride must be >= 1, got %d", frame_output_stride);
+    return false;
+  }
   for (const auto& p : publishers) {
     if (!p.validate(tmp, sizeof(tmp))) {
       if (err&&err_sz) std::snprintf(err, err_sz, "publisher invalid: %s", tmp);
@@ -230,6 +234,9 @@ bool load_from_file(const std::string& path, AppConfig& out, bool /*strict*/, ch
     }
     if (j.contains("frame_quality") && j["frame_quality"].is_number_integer()) {
       out.frame_quality = j["frame_quality"].get<int>();
+    }
+    if (j.contains("frame_output_stride") && j["frame_output_stride"].is_number_integer()) {
+      out.frame_output_stride = j["frame_output_stride"].get<int>();
     }
     if (j.contains("enable_frame_stamp") && j["enable_frame_stamp"].is_boolean()) {
       out.enable_frame_stamp = j["enable_frame_stamp"].get<bool>();

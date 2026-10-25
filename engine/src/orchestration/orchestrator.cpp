@@ -355,9 +355,10 @@ bool Orchestrator::build_pipeline() noexcept {
   if (cfg_.enable_frame_output && !cfg_.output_dir.empty()) {
     try {
       frame_writer_yolo_ = make_frame_writer_disk(cfg_.output_dir, cfg_.max_frames,
-                                                   cfg_.frame_quality, cfg_.blur_config);
-      LG_INFO("[orch] YOLO frame writer enabled: output_dir=%s max_frames=%d quality=%d blur=%s\n",
-              cfg_.output_dir.c_str(), cfg_.max_frames, cfg_.frame_quality,
+                                                   cfg_.frame_quality, cfg_.blur_config,
+                                                   cfg_.frame_output_stride);
+      LG_INFO("[orch] YOLO frame writer enabled: output_dir=%s max_frames=%d quality=%d stride=%d blur=%s\n",
+              cfg_.output_dir.c_str(), cfg_.max_frames, cfg_.frame_quality, cfg_.frame_output_stride,
               cfg_.blur_config.enabled ? "enabled" : "disabled");
     } catch (const std::exception& e) {
       LG_WARN("[orch] Failed to create frame writer: %s (will continue without output)\n", e.what());
@@ -1492,6 +1493,7 @@ void Orchestrator::face_loop_threadfn() noexcept {
         config.model_input_height = face_runner_->spec().input_size.h;
         config.model_name = "RetinaFace";
         config.device_id = device_id_;
+        config.target_fps = cfg_.target_fps;
         config.flip_horizontal = cfg_.flip_horizontal;  // Mirror correction
         config.zone = cfg_.zone;  // full ZoneCfg incl. membership mode
 
@@ -1546,6 +1548,7 @@ void Orchestrator::yolo_loop_threadfn() noexcept {
         config.model_input_height = yolo_runner_->spec().input_size.h;
         config.model_name = "YOLOX";
         config.device_id = device_id_;
+        config.target_fps = cfg_.target_fps;
         config.blur_config = cfg_.blur_config;  // Pass blur config for person blur
         config.flip_horizontal = cfg_.flip_horizontal;  // Mirror correction
         config.enable_frame_stamp = cfg_.enable_frame_stamp;  // Burn frame_seq/frame_ts stamp

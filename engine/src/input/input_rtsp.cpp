@@ -2,6 +2,7 @@
 #include "metrics/log_global.h"
 #include "metrics/stage_stats.h"
 #include "input/camera_time.h"
+#include "input/stream_ready_backoff.h"
 #include <atomic>
 #include <optional>
 #include <thread>
@@ -294,7 +295,19 @@ public:
         auto pipelines = build_rtsp_pipelines(url);
         GError* err = nullptr;
 
-        for (const auto& pipeline_str : pipelines) {
+        // When the server says the stream is not published yet (MediaMTX is still
+        // connecting to the camera), retry the SAME pipeline rather than moving on:
+        // the failure says nothing about the decoder, and moving on is how the
+        // hardware decoder used to be abandoned for software at every boot. One
+        // budget covers the whole open(), so a stream that never appears costs one
+        // budget in total, not one per pipeline.
+        std::optional<std::chrono::steady_clock::time_point> not_ready_since;
+        int not_ready_retries = 0;
+
+        for (size_t next_pipeline = 0; next_pipeline < pipelines.size();) {
+            // Advance now so every `continue` below moves on to the next pipeline;
+            // a retry steps back instead.
+            const std::string& pipeline_str = pipelines[next_pipeline++];
             LG_INFO("input_rtsp:trying pipeline (full): %s\n", pipeline_str.c_str());
 
             // Add delay between attempts to avoid overwhelming camera/network
@@ -359,6 +372,7 @@ public:
 
             bus_ = gst_element_get_bus(pipeline_);
             broken_.store(false, std::memory_order_release);
+            stream_not_ready_.store(false, std::memory_order_release);
             bus_running_.store(true, std::memory_order_release);
 
             // Bus watcher thread
@@ -373,7 +387,17 @@ public:
                         case GST_MESSAGE_ERROR: {
                             GError* e=nullptr; gchar* dbg=nullptr;
                             gst_message_parse_error(msg, &e, &dbg);
-                            LG_ERROR("input_rtsp:GST_MESSAGE_ERROR: %s\n", e ? e->message : "(unknown)");
+                            const std::string text = e ? e->message : "(unknown)";
+                            // The element that raised it and GStreamer's own detail say
+                            // what the bare message does not (a 404 and a decoder fault
+                            // can read alike), so log both.
+                            LG_ERROR("input_rtsp:GST_MESSAGE_ERROR: %s [from %s] [debug: %s]\n",
+                                     text.c_str(), GST_MESSAGE_SRC_NAME(msg), dbg ? dbg : "none");
+                            const bool resource_not_found =
+                                e && e->domain == GST_RESOURCE_ERROR && e->code == GST_RESOURCE_ERROR_NOT_FOUND;
+                            if (rtsp_open::is_stream_not_ready(resource_not_found, text)) {
+                                stream_not_ready_.store(true, std::memory_order_release);
+                            }
                             if (dbg) g_free(dbg);
                             if (e) g_error_free(e);
                             broken_.store(true, std::memory_order_release);
@@ -401,10 +425,15 @@ public:
 
             // Wait for first frame (prove connectivity)
             LG_INFO("input_rtsp:waiting up to %d ms for first frame...\n", first_frame_timeout_ms);
-            GstSample* sample = gst_app_sink_try_pull_sample(GST_APP_SINK(appsink_), first_frame_timeout_ms * GST_MSECOND);
+            GstSample* sample = wait_for_first_frame(first_frame_timeout_ms);
             if (!sample) {
-                LG_ERROR("input_rtsp:first-frame timeout (%d ms) on this pipeline - no frame received\n", first_frame_timeout_ms);
-                LG_ERROR("input_rtsp:pipeline may have errors. Check if camera is streaming and credentials are correct.\n");
+                const bool stream_not_ready = stream_not_ready_.load(std::memory_order_acquire);
+                if (broken_.load(std::memory_order_acquire)) {
+                    LG_ERROR("input_rtsp:pipeline reported an error before its first frame (see GST_MESSAGE_ERROR above)\n");
+                } else {
+                    LG_ERROR("input_rtsp:first-frame timeout (%d ms) on this pipeline - no frame received\n", first_frame_timeout_ms);
+                    LG_ERROR("input_rtsp:pipeline may have errors. Check if camera is streaming and credentials are correct.\n");
+                }
                 // Properly cleanup before trying next pipeline
                 bus_running_.store(false, std::memory_order_release);
                 if (bus_thread_.joinable()) bus_thread_.join();
@@ -412,7 +441,26 @@ public:
                 gst_object_unref(appsink_); appsink_ = nullptr;
                 gst_object_unref(bus_); bus_ = nullptr;
                 gst_object_unref(pipeline_); pipeline_ = nullptr;
+
+                if (stream_not_ready) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (!not_ready_since) not_ready_since = now;
+                    const int waited_ms = static_cast<int>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(now - *not_ready_since).count());
+                    if (const auto delay_ms = rtsp_open::not_ready_retry_delay_ms(not_ready_retries, waited_ms)) {
+                        LG_INFO("input_rtsp:stream not available yet (server says not found); retrying the same pipeline in %d ms (waited %d ms)\n",
+                                *delay_ms, waited_ms);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(*delay_ms));
+                        ++not_ready_retries;
+                        --next_pipeline;  // same pipeline again
+                    } else {
+                        LG_ERROR("input_rtsp:stream still not available after %d ms; giving up on it\n", waited_ms);
+                    }
+                }
                 continue;
+            }
+            if (not_ready_since) {
+                LG_INFO("input_rtsp:stream became available after %d retries\n", not_ready_retries);
             }
 
             GstCaps* scaps = gst_sample_get_caps(sample);
@@ -697,6 +745,21 @@ private:
     std::vector<uint8_t> nv12_small_;
     std::vector<uint8_t> rgb_scratch_;
 
+    // Waits up to timeout_ms for the first decoded frame. Gives up at once if the
+    // pipeline reports an error: waiting out the rest of the timeout cannot help,
+    // and it used to cost 15 s for every attempt that failed.
+    GstSample* wait_for_first_frame(int timeout_ms) {
+        constexpr int kPollMs = 100;
+        for (int waited_ms = 0; waited_ms < timeout_ms; waited_ms += kPollMs) {
+            if (GstSample* sample = gst_app_sink_try_pull_sample(GST_APP_SINK(appsink_), kPollMs * GST_MSECOND)) {
+                return sample;
+            }
+            if (broken_.load(std::memory_order_acquire)) return nullptr;
+        }
+        return nullptr;
+    }
+
+    std::atomic<bool> stream_not_ready_{false};  // set by the bus thread on a "not found" error
     const std::string label_;
     const bool camera_time_enabled_;
     camera_time::ReferenceTimeRing reference_times_;

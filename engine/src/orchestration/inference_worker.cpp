@@ -2,6 +2,7 @@
 #include "orchestration/visualization.h"
 #include "orchestration/frame_stamp.h"
 #include "orchestration/letterbox.h"
+#include "pipeline/frame_rate_limiter.h"
 #include "models/model_runner.h"
 #include "models/model_runner_retinaface.h"
 #include "models/model_runner_yolox.h"
@@ -17,6 +18,7 @@
 #include <opencv2/imgproc.hpp>
 #include <rga/rga.h>
 #include <rga/im2d.h>
+#include <algorithm>
 #include <optional>
 #include <thread>
 #include <chrono>
@@ -283,16 +285,31 @@ void run_inference_loop(
         zone_counter.window_ms = std::max(1, config.zone.window_minutes) * 60000LL;
 
         // Per-stage cost of each frame, summarized once per window at debug
-        // level (log_level=debug). The camera frame is full resolution, so this
-        // shows which full-resolution pass dominates before any is optimized.
-        // The writer drops two of every three frames, so write's average is a
-        // third of one encode and its max is the real per-encode cost.
+        // level (log_level=debug). The writer saves only one frame in every
+        // `stride`, so write's average is a fraction of one encode and its max is
+        // the real per-encode cost.
         constexpr int64_t kTimingWindowNs = 1000000000LL;
         metrics::StageStats resize_stats, infer_stats, clone_stats, overlay_stats,
                             post_stats, write_stats, frame_stats;
         int64_t timing_window_start_ns = metrics::steady_now_ns();
 
+        // Caps how often a frame is started, so a stream configured for N fps is
+        // processed at N fps rather than as fast as the NPU allows. Sleeps are cut
+        // into short slices so a stop request is honoured promptly.
+        pipeline::FrameRateLimiter limiter(config.target_fps);
+        constexpr int64_t kMaxSleepSliceNs = 5'000'000;
+
         while (!stop_flag.load(std::memory_order_relaxed)) {
+            // Wait out the rest of this frame's slot BEFORE taking a frame: the
+            // mailbox always holds the newest frame, so one taken at the start of
+            // its slot is as fresh as it can be, where one taken the moment the
+            // last frame finished may already have been waiting.
+            const int64_t slot_wait_ns = limiter.wait_ns(metrics::steady_now_ns());
+            if (slot_wait_ns > 0) {
+                std::this_thread::sleep_for(std::chrono::nanoseconds(std::min(slot_wait_ns, kMaxSleepSliceNs)));
+                continue;
+            }
+
             // Get next frame from mailbox
             auto sf = frame_mailbox->takeFrame();
             if (!sf) {
@@ -313,6 +330,9 @@ void run_inference_loop(
                 #endif
                 continue;
             }
+
+            // This frame takes the slot; the next may start one interval later.
+            limiter.mark_started(metrics::steady_now_ns());
 
             // Track processed frames (for inference FPS)
             fps_processed_count++;

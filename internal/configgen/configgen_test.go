@@ -321,6 +321,39 @@ func TestRenderLogLevel(t *testing.T) {
 	}
 }
 
+func TestRenderPreviewStride(t *testing.T) {
+	stride := 2
+	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883, PreviewStride: &stride}
+	out, err := Render(config.Stream{ID: "cam", RTSPURL: "rtsp://h/live", TargetFPS: 10}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["frame_output_stride"] != 2.0 {
+		t.Errorf("frame_output_stride = %v, want 2", m["frame_output_stride"])
+	}
+}
+
+func TestRenderPreviewStrideOmittedInheritsTemplate(t *testing.T) {
+	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	out, err := Render(config.Stream{ID: "cam", RTSPURL: "rtsp://h/live", TargetFPS: 10}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	// The packaged template ships frame_output_stride=1; leaving the option unset
+	// must not disturb it.
+	if m["frame_output_stride"] != 1.0 {
+		t.Errorf("omitted PreviewStride should inherit the template's 1, got %v", m["frame_output_stride"])
+	}
+}
+
 func TestRenderLogLevelOmittedInheritsTemplate(t *testing.T) {
 	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
 	out, err := Render(config.Stream{ID: "cam", RTSPURL: "rtsp://h/live", TargetFPS: 10}, opts)
