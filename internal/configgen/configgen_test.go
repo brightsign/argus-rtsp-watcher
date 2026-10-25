@@ -28,6 +28,30 @@ func TestTopic(t *testing.T) {
 	}
 }
 
+func TestClientIDIsPerStream(t *testing.T) {
+	if got := ClientID("reo1"); got != "xt5-gaze-reo1" {
+		t.Errorf("got %q", got)
+	}
+	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	seen := map[string]bool{}
+	for _, id := range []string{"reo1", "pixley"} {
+		out, err := Render(config.Stream{ID: id, RTSPURL: "rtsp://h/live", TargetFPS: 10}, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(out, &m); err != nil {
+			t.Fatal(err)
+		}
+		mq := m["publishers"].([]any)[0].(map[string]any)["mqtt"].(map[string]any)
+		clientID := mq["client_id"].(string)
+		if seen[clientID] {
+			t.Errorf("duplicate client_id %q", clientID)
+		}
+		seen[clientID] = true
+	}
+}
+
 func TestRenderRTSPStream(t *testing.T) {
 	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
 	out, err := Render(config.Stream{ID: "cam1", RTSPURL: "rtsp://h/live", TargetFPS: 7}, opts)
