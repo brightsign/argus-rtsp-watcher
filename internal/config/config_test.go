@@ -354,6 +354,35 @@ func TestValidateSourcesAndConfidence(t *testing.T) {
 	}
 }
 
+func TestEngineLogDir(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		template string
+		want     string
+	}{
+		{"configured", `{"log_dir":"/storage/sd/logs","log_level":"info"}`, "/storage/sd/logs"},
+		{"absent", `{"log_level":"info"}`, DefaultLogDir},
+		{"empty", `{"log_dir":""}`, DefaultLogDir},
+		{"other fields ignored", `{"input":{"rtsp_url":""},"log_dir":"/data"}`, "/data"},
+	} {
+		got, err := EngineLogDir(json.RawMessage(tc.template))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestEngineLogDirRejectsMalformedTemplates(t *testing.T) {
+	for _, bad := range []string{`{not json`, `{"log_dir": 7}`, `{"log_dir": ["/tmp"]}`, ``} {
+		if _, err := EngineLogDir(json.RawMessage(bad)); err == nil {
+			t.Errorf("template %q accepted", bad)
+		}
+	}
+}
+
 func TestValidateLogLevel(t *testing.T) {
 	withLevel := func(level string) Watcher {
 		return Watcher{LogLevel: level, Streams: []Stream{{ID: "a", RTSPURL: "rtsp://h", TargetFPS: 10}}}

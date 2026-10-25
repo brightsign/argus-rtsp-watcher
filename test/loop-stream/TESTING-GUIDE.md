@@ -90,7 +90,7 @@ Do this and report a PASS/FAIL with the per-channel table:
 6. Report the per-channel mean_in_zone / time_in_zone table and the PASS/FAIL.
    PASS = all 8 channels within tolerance of the mean (they ingest identical frames,
    so they must agree). If a channel is missing or zero, check that stream's engine
-   log on the player (/tmp/watcher.log) and that the RTSP URL is reachable from the player.
+   log on the player (/tmp/<stream-id>.log, and /tmp/main.log for the watcher) and that the RTSP URL is reachable from the player.
 
 Guardrails:
 - Do not commit any video/media (they're gitignored; keep them out of git).

@@ -20,6 +20,7 @@
 #include "output/publisher_v2.h"
 #include "orchestration/zone.h"
 #include "orchestration/inference_worker.h"
+#include "orchestration/stall_watchdog.h"
 #include "tracking/tracker.h"
 #include "analysis/light_analyzer.h"
 
@@ -224,6 +225,10 @@ private:
     if (!ic.file_path.empty()) return SourceKind::File;
     return SourceKind::Unknown;
   }
+
+  // Ends the process if a step of recover_pipeline never returns. Declared last so
+  // it is destroyed first: its thread is joined before anything else goes away.
+  stall_watchdog::StallWatchdog recovery_watchdog_;
 };
 
 #endif // ORCHESTRATOR_H

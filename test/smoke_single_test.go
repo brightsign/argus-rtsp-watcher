@@ -113,7 +113,7 @@ func TestSingleStreamSmokeEndToEnd(t *testing.T) {
 		t.Fatalf("write mosquitto conf: %v", err)
 	}
 
-	brokerCmd, err := broker.Start(mosquittoBin, mosquittoConfPath)
+	brokerCmd, err := broker.Start(mosquittoBin, mosquittoConfPath, nil)
 	if err != nil {
 		t.Fatalf("start mosquitto: %v", err)
 	}

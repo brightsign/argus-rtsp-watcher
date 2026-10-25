@@ -268,6 +268,26 @@ func EngineTemplate(w Watcher, packageDefault string) (json.RawMessage, error) {
 	return pkg.Engine, nil
 }
 
+// DefaultLogDir is where the engines write their per-stream logs, and the watcher
+// its main log, when the engine template names no log_dir.
+const DefaultLogDir = "/tmp"
+
+// EngineLogDir returns the directory log files go to: the engine template's
+// "log_dir", or DefaultLogDir when it is absent or empty. The watcher puts its
+// main log beside the engines' stream logs so all of them are found in one place.
+func EngineLogDir(template json.RawMessage) (string, error) {
+	var parsed struct {
+		LogDir string `json:"log_dir"`
+	}
+	if err := json.Unmarshal(template, &parsed); err != nil {
+		return "", fmt.Errorf("read log_dir from engine template: %w", err)
+	}
+	if parsed.LogDir == "" {
+		return DefaultLogDir, nil
+	}
+	return parsed.LogDir, nil
+}
+
 // Load reads, parses, defaults, and validates a config.json file.
 func Load(path string) (Watcher, error) {
 	data, err := os.ReadFile(path)

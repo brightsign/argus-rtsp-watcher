@@ -3,10 +3,13 @@
 #include <chrono>
 #include <thread>
 #include <iostream>
+#include <string>
+#include <unistd.h>
 #include <opencv2/core.hpp>
 #include <opencv2/core/ocl.hpp>
 
 #include "metrics/file_logger.h"
+#include "metrics/log_naming.h"
 #include "metrics/log_global.h"
 #include "config/configuration.h"
 #include "orchestration/orchestrator.h"
@@ -122,9 +125,20 @@ int main(int argc, char** argv) {
     cv::ocl::setUseOpenCL(false);
     #endif
     
+    // Parse CLI first: the config file's name is the stream's name, which names
+    // this engine's own log file from the very first line.
+    CliArgs cli = parse_cli(argc, argv);
+    const std::string startup_stem = log_naming::sanitize_log_stem(
+        cli.cfg ? log_naming::path_stem(cli.cfg) : std::string());
+
     // ---- logging (initial setup - use /tmp to avoid boot-time SD mount race) ----
+    // One file per stream, so four engines never share a file or rotate over each
+    // other. Mirror to stderr only on a terminal: under the watcher stderr is its
+    // main log, which must not be flooded with every stream's lines.
+    const bool stderr_is_terminal = ::isatty(STDERR_FILENO) != 0;
     FileRotatingLogger::Config logcfg;
-    logcfg.path = kEngineLogFallbackPath;
+    logcfg.path = log_naming::stream_log_path("/tmp", startup_stem);
+    logcfg.also_stderr = stderr_is_terminal;
     logcfg.utc_time = true;  // match the UTC on-frame stamp and MQTT timestamps
     logcfg.max_mb = 5;
     logcfg.max_files = 5;
@@ -139,9 +153,6 @@ int main(int argc, char** argv) {
 
     // TEST: Verify atomic flag operations work correctly
     test_atomic_flags();
-
-    // Parse CLI once
-    CliArgs cli = parse_cli(argc, argv);
 
     // Pick config path (CLI or default search)
     std::string cfg_path;
@@ -180,11 +191,16 @@ int main(int argc, char** argv) {
       LG_INFO("Log level set to: %s", level_names[static_cast<int>(level)]);
     }
 
-    // Re-initialize logger to configured log_dir if specified
+    // Re-initialize logger to configured log_dir if specified. The file is named
+    // for the stream: its device id, else the config file's name.
     if (!appcfg.log_dir.empty()) {
-      std::string log_path = appcfg.log_dir + "/" + kEngineLogFileName;
+      const std::string stem = appcfg.device_id.empty()
+          ? startup_stem
+          : log_naming::sanitize_log_stem(appcfg.device_id);
+      std::string log_path = log_naming::stream_log_path(appcfg.log_dir, stem);
       FileRotatingLogger::Config cfg2;
       cfg2.path      = log_path;
+      cfg2.also_stderr = stderr_is_terminal;
       cfg2.utc_time  = true;
       cfg2.max_mb    = 5;
       cfg2.max_files = 5;
@@ -195,7 +211,7 @@ int main(int argc, char** argv) {
         flog = flog2;
         LG_INFO("Logger switched to: %s", log_path.c_str());
       } else {
-        LG_WARN("Could not open log at %s, keeping %s", log_path.c_str(), kEngineLogFallbackPath);
+        LG_WARN("Could not open log at %s, keeping %s", log_path.c_str(), flog->path().c_str());
       }
     }
 

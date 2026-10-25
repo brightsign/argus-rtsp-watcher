@@ -5,6 +5,7 @@ package supervisor
 
 import (
 	"context"
+	"io"
 	"os"
 	"sync"
 	"syscall"
@@ -23,6 +24,10 @@ type Spec struct {
 	Args        []string
 	Env         []string
 	Fingerprint string
+	// Output receives the child's stdout and stderr. Nil inherits the
+	// watcher's own. It is not part of the process's effective configuration,
+	// so it never affects Fingerprint or causes a restart.
+	Output io.Writer
 }
 
 // Process is a running child the supervisor can wait on and signal.

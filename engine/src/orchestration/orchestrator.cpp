@@ -53,6 +53,38 @@ inline void resolve_usb_device(InputConfig& in) {
     if (!dev.empty()) in.usb_device = dev;
   }
 }
+
+// How long each step of recover_pipeline may take before the engine gives up and
+// exits (see exit_on_recovery_stall). The tight steps normally finish in about a
+// second or less, so their limits are generous multiples. Opening the input is
+// the exception: it legitimately blocks on RTSP, whose own timeouts add up when
+// every fallback pipeline times out (a 15 s first-frame wait each, across six
+// pipelines and two URL variants, plus the network wait).
+constexpr std::chrono::seconds kStopWorkersLimit{15};
+constexpr std::chrono::seconds kOpenInputLimit{300};
+constexpr std::chrono::seconds kLoadModelsLimit{60};
+constexpr std::chrono::seconds kReleaseOldPipelineLimit{15};
+constexpr std::chrono::seconds kLaunchWorkersLimit{15};
+
+// Exit status when the engine ends itself over a stalled recovery step (the
+// sysexits.h value EX_SOFTWARE). The watcher treats any exit as a crash and
+// restarts the engine.
+constexpr int kStallExitCode = 70;
+
+// A recovery step that never returns means the capture pipeline cannot be torn
+// down (a GStreamer thread spinning in a teardown it holds a lock for), and the
+// thread that would retry recovery is the one stuck. Nothing inside the process
+// can fix that, and the spinning thread burns a core while the stream is frozen,
+// so end the process and let the watcher start a clean one. _Exit, not exit: the
+// atexit handlers and destructors would wait on the same wedged pipeline.
+void exit_on_recovery_stall(const std::string& phase, std::chrono::milliseconds limit) {
+  LG_CRIT("recover_pipeline:stalled in '%s' for more than %lld s; the capture pipeline cannot be "
+          "torn down. Exiting so the watcher restarts this engine.",
+          phase.c_str(),
+          static_cast<long long>(std::chrono::duration_cast<std::chrono::seconds>(limit).count()));
+  std::fflush(nullptr);
+  std::_Exit(kStallExitCode);
+}
 }
 
 // ...
@@ -175,7 +207,8 @@ static void normalize_rgb_u8_to_float(const uint8_t* src_rgb, float* dst_f,
 Orchestrator::Orchestrator(PipelineConfig cfg) noexcept
     : cfg_(std::move(cfg)),
       state_(OrchestratorState::Stopped),
-      source_health_(detect_source_kind(cfg_.input)) {}
+      source_health_(detect_source_kind(cfg_.input)),
+      recovery_watchdog_(exit_on_recovery_stall) {}
 
 Orchestrator::~Orchestrator() { stop_threads(); destroy_pipeline(); }
 
@@ -1140,6 +1173,13 @@ void Orchestrator::mark_broken(FaultCode, int64_t now) noexcept {
 bool Orchestrator::recover_pipeline(int64_t now_ns_val) noexcept {
     LG_INFO("recover_pipeline:starting recovery attempt\n");
 
+    // Every step below runs under the recovery watchdog: this guard arms the first
+    // step and disarms on every way out of the function, and each later step re-arms
+    // it with its own limit. Declared before any local so it is destroyed after all of
+    // them, which keeps the teardown of a failed new pipeline (whose destructor can
+    // block like the old one's) under watch too.
+    stall_watchdog::ScopedStallPhase watch(recovery_watchdog_, "stop worker threads", kStopWorkersLimit);
+
     // 1. Stop (or quarantine) any existing worker
     LG_INFO("recover_pipeline:stopping worker\n");
     stop_threads();  // bounded, returns fast
@@ -1194,6 +1234,7 @@ bool Orchestrator::recover_pipeline(int64_t now_ns_val) noexcept {
 
     // 5. Build brand new input source / runner using that device.
     LG_INFO("recover_pipeline:rebuilding pipeline around %s\n", device_desc.c_str());
+    recovery_watchdog_.arm("open new input", kOpenInputLimit);
 
     std::unique_ptr<IInputSource> new_input_tmp;
     cfg_.input.rtsp.label = device_id_;
@@ -1214,6 +1255,8 @@ bool Orchestrator::recover_pipeline(int64_t now_ns_val) noexcept {
         new_input_tmp->close();
         return false; // still broken
     }
+
+    recovery_watchdog_.arm("load models", kLoadModelsLimit);
 
     // Create face runner only if enabled
     std::shared_ptr<IModelRunner> new_face_runner;
@@ -1257,7 +1300,10 @@ bool Orchestrator::recover_pipeline(int64_t now_ns_val) noexcept {
         new_yolo_runner = std::shared_ptr<IModelRunner>(std::move(new_yolo_runner_tmp));
     }
 
-    // 6. Publish new pipeline objects
+    // 6. Publish new pipeline objects. Replacing input_ and the runners destroys the
+    //    previous ones, and tearing down the old capture pipeline is the step that
+    //    wedged in the field (a spinning jitter-buffer thread), so it has a tight limit.
+    recovery_watchdog_.arm("release previous pipeline", kReleaseOldPipelineLimit);
     auto new_input = std::shared_ptr<IInputSource>(std::move(new_input_tmp));
     
     input_  = new_input;
@@ -1265,6 +1311,7 @@ bool Orchestrator::recover_pipeline(int64_t now_ns_val) noexcept {
     yolo_runner_ = new_yolo_runner;
 
     // 7. Reset orchestrator run state for NEW worker threads
+    recovery_watchdog_.arm("launch worker threads", kLaunchWorkersLimit);
     LG_INFO("recover_pipeline:resetting run state for new worker threads\n");
     stop_capture_.store(false, std::memory_order_release);
     stop_face_.store(false, std::memory_order_release);

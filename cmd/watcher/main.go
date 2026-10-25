@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -20,7 +22,9 @@ import (
 	"argus-rtsp-watcher/internal/configgen"
 	"argus-rtsp-watcher/internal/configwatch"
 	"argus-rtsp-watcher/internal/health"
+	"argus-rtsp-watcher/internal/linewriter"
 	"argus-rtsp-watcher/internal/platform"
+	"argus-rtsp-watcher/internal/rotatelog"
 	"argus-rtsp-watcher/internal/supervisor"
 )
 
@@ -44,13 +48,23 @@ const (
 	mediamtxBinary = "mediamtx"
 	mediamtxID     = "mediamtx"
 
+	// The main log collects everything that is not one stream's engine log: the
+	// watcher's own lines and the output of every child process (MediaMTX, the
+	// broker, the dashboard, the preview servers, and each engine's raw stderr).
+	// Each engine writes its own per-stream log itself. Sizes match the engine's.
+	mainLogName     = "main.log"
+	mainLogMaxBytes = 5 << 20
+	mainLogMaxFiles = 5
+
 	// configServerID is the on-player dashboard. A global restart leaves it
 	// running so the page that requested the restart still gets its response.
 	configServerID = "config-server"
 )
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
+	// UTC with microseconds, the same layout linewriter gives child output, so
+	// main.log reads as one timeline and lines up with the engines' UTC logs.
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds | log.LUTC | log.Lmsgprefix)
 	log.SetPrefix("[watcher] ")
 
 	extDir, err := os.Executable()
@@ -64,11 +78,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("config discovery: %v", err)
 	}
-	log.Printf("using config %s", cfgPath)
 	w, err := config.Load(cfgPath)
 	if err != nil {
 		log.Fatalf("config load: %v", err)
 	}
+
+	tpl, err := config.EngineTemplate(w, pkgDefault)
+	if err != nil {
+		log.Fatalf("engine template: %v", err)
+	}
+	mainLog := openMainLog(tpl)
+	log.Printf("using config %s", cfgPath)
 
 	tier := platform.TierFor(platform.DetectPlayerSoC())
 	log.Printf("SoC=%s model=%s safe_streams=%d configured=%d",
@@ -78,10 +98,6 @@ func main() {
 			len(w.Streams), tier.SafeStreams, tier.Model)
 	}
 
-	tpl, err := config.EngineTemplate(w, pkgDefault)
-	if err != nil {
-		log.Fatalf("engine template: %v", err)
-	}
 	opts := configgen.Options{TemplateJSON: tpl, TopicPrefix: topicPrefix, MQTTHost: mqttHost, MQTTPort: mqttPort, LogLevel: w.LogLevel}
 
 	engineBin := filepath.Join(extDir, "argus-engine")
@@ -91,8 +107,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("build specs: %v", err)
 	}
+	initialSpecs = withOutputs(initialSpecs, mainLog)
 
-	brokerCmd, err := startBroker(extDir)
+	brokerCmd, err := startBroker(extDir, mainLog)
 	if err != nil {
 		log.Fatalf("broker: %v", err)
 	}
@@ -132,6 +149,7 @@ func main() {
 			log.Printf("reload skipped, build specs: %v", err)
 			return
 		}
+		specs = withOutputs(specs, mainLog)
 		log.Printf("reconciling to %d streams", len(specs))
 		if restartID == nil {
 			sup.Reconcile(specs)
@@ -170,6 +188,41 @@ func main() {
 		log.Printf("broker stop: %v", err)
 	}
 	log.Printf("shutdown complete")
+}
+
+// openMainLog opens the main log beside the engines' stream logs and makes the
+// watcher's own log lines go to it as well as to stderr (so a startup failure is
+// still visible in the init script's redirect). It returns nil, after saying why,
+// when the file cannot be opened: logging to stderr alone beats not starting.
+func openMainLog(template json.RawMessage) io.Writer {
+	dir, err := config.EngineLogDir(template)
+	if err != nil {
+		log.Printf("main log disabled: %v", err)
+		return nil
+	}
+	mainLog, err := rotatelog.New(filepath.Join(dir, mainLogName), mainLogMaxBytes, mainLogMaxFiles)
+	if err != nil {
+		log.Printf("main log disabled: %v", err)
+		return nil
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, mainLog))
+	return mainLog
+}
+
+// withOutputs returns specs whose child output goes to the main log, each line
+// timestamped and tagged with the process id ("[reo1]", "[reo1:preview]",
+// "[mediamtx]", ...). With no main log the specs are returned unchanged and the
+// children keep inheriting the watcher's stderr.
+func withOutputs(specs []supervisor.Spec, mainLog io.Writer) []supervisor.Spec {
+	if mainLog == nil {
+		return specs
+	}
+	tagged := make([]supervisor.Spec, len(specs))
+	for i, spec := range specs {
+		spec.Output = linewriter.NewPrefixer("["+spec.ID+"]", mainLog)
+		tagged[i] = spec
+	}
+	return tagged
 }
 
 // previewPort returns the port assigned to the preview server of the
@@ -281,7 +334,7 @@ func mediamtxSpec(w config.Watcher, extDir string) (supervisor.Spec, bool) {
 	}, true
 }
 
-func startBroker(extDir string) (*exec.Cmd, error) {
+func startBroker(extDir string, mainLog io.Writer) (*exec.Cmd, error) {
 	confPath := "/tmp/argus-watcher-mosquitto.conf"
 	// Two listeners: plain MQTT on 1883 (engines publish here) and MQTT over
 	// WebSockets on 9001 so browser JS (the on-player presentation) can subscribe
@@ -295,7 +348,11 @@ func startBroker(extDir string) (*exec.Cmd, error) {
 	if err := os.WriteFile(confPath, []byte(conf), 0o644); err != nil {
 		return nil, err
 	}
-	cmd, err := broker.Start(filepath.Join(extDir, "bin", "mosquitto"), confPath)
+	var brokerOutput io.Writer
+	if mainLog != nil {
+		brokerOutput = linewriter.NewPrefixer("[mosquitto]", mainLog)
+	}
+	cmd, err := broker.Start(filepath.Join(extDir, "bin", "mosquitto"), confPath, brokerOutput)
 	if err != nil {
 		return nil, err
 	}

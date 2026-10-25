@@ -4,20 +4,19 @@
 #include <string>
 #include "metrics/logging.h"
 
-// Every engine log line goes to this one file (capture, inference, MQTT, zones,
-// light, timing), not just gaze. The fallback lives in /tmp so logging works
-// before the SD card is mounted; the configured log_dir takes over after config load.
-constexpr const char* kEngineLogFileName = "engine.log";
-constexpr const char* kEngineLogFallbackPath = "/tmp/engine.log";
+// Each engine process (one per stream) logs to its own file, named for its
+// stream (see metrics/log_naming.h), so streams never share a file or collide
+// when rotating. This default is used only when no stream name is given.
+constexpr const char* kDefaultLogPath = "/tmp/engine.log";
 
 class FileRotatingLogger final : public ILogger {
 public:
   struct Config {
-    std::string path   = kEngineLogFallbackPath; // re-opened at configured log_dir after config load
+    std::string path   = kDefaultLogPath;         // re-opened at the stream's own path after config load
     size_t      max_mb = 5;                           // 5 MB per file
-    int         max_files = 5;                        // engine.log.1 .. .5
+    int         max_files = 5;                        // <path>.1 .. .5
     LogLevel    min_level = LogLevel::Info;           // default threshold
-    bool        also_stderr = true;                   // mirror to stderr
+    bool        also_stderr = true;                   // mirror to stderr (the engine sets this only when stderr is a terminal)
     bool        utc_time = false;                     // localtime by default (the engine sets true; lines then end the time with Z)
   };
 

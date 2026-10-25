@@ -167,7 +167,7 @@ The single operator-facing file. Top-level sections: `streams` (required), `medi
 | `streams` | yes | The list of cameras to run, one engine each (fields below). |
 | `mediamtx` | no | `{ "enabled": bool, "config": "<path>" }` — run the bundled on-player RTSPS proxy. Default off. See [Running the proxy on the player](#running-the-proxy-on-the-player-optional). |
 | `engine` | no | The per-stream engine template (models, thresholds, MQTT, logging). Omit to inherit the packaged default; include to override it. Rendered per stream, with `confidence`/`zone`/`target_fps`/`rtsp_url` applied on top. |
-| `log_level` | no | Global engine log verbosity: `debug`, `info`, `warn`, `error`, or `critical`. Omit to inherit the template (`info`). Set `warn` to silence the engine's continuous per-event INFO logs. Set `debug` for performance diagnosis: it adds one line per second per stream with the cost of each stage (`input_rtsp: NV12->BGR convert`, `capture_loop: stage ms`, `inference_worker: stage ms`, as avg/max milliseconds). Applies to every stream's engine process. The engine log is `engine.log` in the configured `log_dir` (`/tmp` by default), in **UTC** with a `Z` after the time so it lines up with the on-frame stamp and MQTT timestamps. |
+| `log_level` | no | Global engine log verbosity: `debug`, `info`, `warn`, `error`, or `critical`. Omit to inherit the template (`info`). Set `warn` to silence the engine's continuous per-event INFO logs. Set `debug` for performance diagnosis: it adds one line per second per stream with the cost of each stage (`input_rtsp: NV12->BGR convert`, `capture_loop: stage ms`, `inference_worker: stage ms`, as avg/max milliseconds). Applies to every stream's engine process. Where the logs go, and how to read them, is under [Logs](#logs). |
 | `streams[].id` | yes | Unique, `^[A-Za-z0-9_-]+$`. Becomes the MQTT topic and preview port index. |
 | `streams[].rtsp_url` | source* | The camera/proxy RTSP URL. |
 | `streams[].file_path` | source* | A local video file to analyze instead of a live feed (test/offline). |
@@ -502,7 +502,23 @@ It does **not** cover anything after the fetch: waiting for the inference worker
 - If no frame has a camera time for more than 15 seconds, the average starts over, and it disappears from the line together with `lag`.
 - Read the two together: `lag` is this frame, `avg15s` is the steady level. A `lag` far above the average is a spike, such as a stall or a burst of packets. An average that climbs over minutes means the pipeline or the network is falling behind.
 
-The same numbers are available elsewhere. With `log_level: debug`, the `capture_loop` line in `engine.log` reports `camera_time=<frames with a camera time>/<frames>` and `last_lag_ms`. In MQTT, `det_ts − source_ts` is the lag of the frame the boxes were detected on (see [docs/bounding-boxes.md](docs/bounding-boxes.md#frame-stamp-video--mqtt-sync)).
+The same numbers are available elsewhere. With `log_level: debug`, the `capture_loop` line in the stream's log (see [Logs](#logs)) reports `camera_time=<frames with a camera time>/<frames>` and `last_lag_ms`. In MQTT, `det_ts − source_ts` is the lag of the frame the boxes were detected on (see [docs/bounding-boxes.md](docs/bounding-boxes.md#frame-stamp-video--mqtt-sync)).
+
+### Logs
+
+Logs are split by who writes them, so one stream's trouble is never buried in another's:
+
+| File | Written by | Holds |
+|------|------------|-------|
+| `<log_dir>/<stream>.log` | that stream's engine | Everything the engine logs for the stream: capture, inference, zones, MQTT, timing at `debug`. One file per stream, named for its `id` (`reo1.log`, `back-door.log`, ...). |
+| `<log_dir>/main.log` | the watcher | Everything that is not one stream's engine log: the watcher's own lines (reloads, restarts, recovery), plus the output of MediaMTX (`[mediamtx]`), the broker (`[mosquitto]`), the dashboard (`[config-server]`), the preview servers (`[reo1:preview]`), and each engine's raw stderr (`[reo1]`: crashes and library noise that bypass its own log). |
+
+- **`log_dir`** is the engine template's `log_dir`, `/tmp` by default. `/tmp` is memory on the player.
+- **Rotation:** each file keeps up to 5 rotated copies of 5 MB (`reo1.log.1` ... `reo1.log.5`). Each stream rotates its own file, so streams never interfere with each other.
+- **Time:** every line is UTC; engine lines end the time with `Z`, and `main.log` uses the same clock, so the files line up.
+- **`/tmp/watcher.log`** is what the init script captures from the watcher process's own stderr: the watcher's own lines (also kept in `main.log`, so a startup failure or a panic is visible even if `main.log` could not be opened) and nothing from the processes it runs. It is not rotated, but the watcher's own output is small.
+- **On a terminal** an engine also mirrors its log to stderr, for running it by hand; under the watcher it does not.
+- **Level:** `log_level` applies to the engines. `debug` is verbose: expect several MB per stream per few minutes.
 
 ### Health
 
@@ -711,12 +727,14 @@ docs/               DESIGN.md, bounding-boxes.md, HARDWARE-VALIDATION.md
 | Symptom | Check |
 |---------|-------|
 | No MQTT messages | Is an engine running? `curl :9200/healthz` — if `Restarts` keeps climbing, the engine can't open its RTSP stream. |
-| Engines crash-loop, `first-frame timeout` in `/tmp/watcher.log` | The RTSP source is slow to deliver the first frame. Keep the source warm (e.g. MediaMTX `sourceOnDemand: no`) and confirm the player can reach the URL. The engine allows up to 15s for the first frame. |
+| Engines crash-loop, `first-frame timeout` in the stream's log (`/tmp/<id>.log`) | The RTSP source is slow to deliver the first frame. Keep the source warm (e.g. MediaMTX `sourceOnDemand: no`) and confirm the player can reach the URL. The engine allows up to 15s for the first frame. |
 | Preview page loads but shows a placeholder box | The engine isn't writing frames (usually the same RTSP problem above) — fix the engine first; the preview serves whatever is at `/tmp/argus-frames/<id>/output.jpg`. |
 | `over_capacity: true` in health | More streams than the SoC tier supports (see the hardware table). |
 | Player unreachable on preview ports | Open inbound `20200..20200+N-1`. |
 
-Logs: `tail -f /tmp/watcher.log` on the player (engine + watcher output).
+| A stream's preview is frozen | `grep -a "recover_pipeline" /tmp/<id>.log`. If a step "stalled", the engine ended itself and the watcher restarted it; look for `[<id>]` lines in `main.log` around that time. |
+
+Logs: see [Logs](#logs). `tail -f /tmp/main.log` for the watcher and everything it runs, `tail -f /tmp/<id>.log` for one stream.
 
 ## Documentation
 
