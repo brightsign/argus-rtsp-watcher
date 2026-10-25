@@ -93,7 +93,7 @@ run_watcher() {
 
     cd ${SOC_HOME}
 
-    # No CLI arguments: the watcher discovers watcher.json itself (SD/SSD,
+    # No CLI arguments: the watcher discovers config.json itself (SD/SSD,
     # then the package default alongside this binary).
     if [ "$background" = "true" ]; then
         echo "DEBUG: Starting watcher as a daemon"
@@ -229,7 +229,7 @@ case "$ACTION" in
         echo ""
         echo "The watcher owns mosquitto and every per-stream engine process;"
         echo "this script only starts, stops, and monitors the single watcher"
-        echo "process. Streams are configured via watcher.json (see docs)."
+        echo "process. Streams are configured via config.json (see docs)."
         echo ""
         echo "MQTT Utilities:"
         echo "  The environment is configured with LD_LIBRARY_PATH for MQTT utilities."

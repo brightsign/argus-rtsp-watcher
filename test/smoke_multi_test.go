@@ -34,7 +34,7 @@ import (
 // helpers (mqttConnect, mqttSubscribe, mqttReadFixedHeader, ...). On a
 // matching host the assertions below are real: three file-input streams
 // publish independently, killing one engine leaves the other two publishing
-// and the killed one restarts, and rewriting watcher.json to drop cam3 and
+// and the killed one restarts, and rewriting config.json to drop cam3 and
 // add cam4 is reconciled live without ever interrupting cam1/cam2.
 const (
 	multiTopicPrefix = "bs/argus"
@@ -61,9 +61,9 @@ const (
 )
 
 // TestMultiStreamIsolationAndReconcile starts the watcher against a
-// 3-file-stream watcher.json (cam1/cam2/cam3), confirms all three publish
+// 3-file-stream config.json (cam1/cam2/cam3), confirms all three publish
 // independently, kills one engine process and confirms the other two are
-// unaffected and the killed one restarts, then rewrites watcher.json in
+// unaffected and the killed one restarts, then rewrites config.json in
 // place to drop cam3 and add cam4 and confirms the reconcile completes
 // without ever interrupting cam1/cam2.
 func TestMultiStreamIsolationAndReconcile(t *testing.T) {
@@ -95,8 +95,8 @@ func TestMultiStreamIsolationAndReconcile(t *testing.T) {
 	}
 
 	// The test builds its own self-contained extension directory in a temp
-	// dir and its own watcher.json inside it, rather than touching the
-	// shipped examples/watcher.example.json or the shared staging/<SOC> tree
+	// dir and its own config.json inside it, rather than touching the
+	// shipped examples/config.example.json or the shared staging/<SOC> tree
 	// -- those stay untouched for any other test or a real packaging run.
 	extDir := setupWatcherExtDir(t, stagingDir, watcherBin)
 	configJSONPath := filepath.Join(extDir, "config.json")
@@ -208,7 +208,7 @@ func TestMultiStreamIsolationAndReconcile(t *testing.T) {
 	cam3CountAtReconcile := tracker.countOf(cam3Topic)
 	time.Sleep(multiQuietGrace)
 	if got := tracker.countOf(cam3Topic); got != cam3CountAtReconcile {
-		t.Fatalf("cam3 published %d more message(s) after being removed from watcher.json -- it did not stop",
+		t.Fatalf("cam3 published %d more message(s) after being removed from config.json -- it did not stop",
 			got-cam3CountAtReconcile)
 	}
 }

@@ -99,7 +99,7 @@ static void draw_face_detections(
         if (fusion_output->face_dets.empty() || fusion_output->face_seq == 0) {
             static int no_face_log_count = 0;
             if (no_face_log_count < 10 || no_face_log_count % 100 == 0) {
-                LG_INFO("[VIS-FACE] No face detections in fusion (seq=%llu, dets=%zu)",
+                LG_DEBUG("[VIS-FACE] No face detections in fusion (seq=%llu, dets=%zu)",
                         (unsigned long long)fusion_output->face_seq,
                         fusion_output->face_dets.size());
             }
@@ -115,7 +115,7 @@ static void draw_face_detections(
     // Log periodically
     static int face_draw_count = 0;
     if (face_draw_count < 10 || face_draw_count % 30 == 0) {
-        LG_INFO("[VIS-FACE] Drawing %zu face detections from fusion (seq=%llu, count=%d)", 
+        LG_DEBUG("[VIS-FACE] Drawing %zu face detections from fusion (seq=%llu, count=%d)", 
                 face_dets_copy.size(), (unsigned long long)face_seq_copy, face_draw_count);
     }
     face_draw_count++;
@@ -133,7 +133,7 @@ static void draw_face_detections(
     
     static int face_delbox_log = 0;
     if (face_delbox_log < 3) {
-        LG_INFO("[RET] De-letterbox: cam=%dx%d model=320x320 s=%.3f pad=(%.1f,%.1f)", 
+        LG_DEBUG("[RET] De-letterbox: cam=%dx%d model=320x320 s=%.3f pad=(%.1f,%.1f)", 
                 orig_width, orig_height, s, pad_x, pad_y);
         face_delbox_log++;
     }
@@ -149,7 +149,7 @@ static void draw_face_detections(
                                    det.x0, det.y0, det.x1, det.y1)) {
                 static int reject_log = 0;
                 if (++reject_log <= 10 || reject_log % 60 == 0)
-                    LG_INFO("[VIS-FACE-FILTER] Rejected face#%zu as non-face (landmark geometry fail)", i);
+                    LG_DEBUG("[VIS-FACE-FILTER] Rejected face#%zu as non-face (landmark geometry fail)", i);
                 continue;
             }
         }
@@ -200,7 +200,7 @@ static void draw_face_detections(
                 static int attn_log = 0;
                 if (++attn_log >= 90) {
                     attn_log = 0;
-                    LG_INFO("[VIZ-GAZE] face#%zu yaw=%.2f pitch=%.2f roll=%.2f  %s",
+                    LG_DEBUG("[VIZ-GAZE] face#%zu yaw=%.2f pitch=%.2f roll=%.2f  %s",
                             i, yaw_proxy, pitch_proxy, roll_proxy,
                             attending ? "ATTENDING" : "away");
                 }
@@ -278,7 +278,7 @@ static void draw_face_detections(
 
         static int face_transform_log = 0;
         if (face_transform_log < 3 && i == 0) {
-            LG_INFO("[RET] Face#%zu model=(%.1f,%.1f,%.1f,%.1f) -> camera=(%.1f,%.1f,%.1f,%.1f)",
+            LG_DEBUG("[RET] Face#%zu model=(%.1f,%.1f,%.1f,%.1f) -> camera=(%.1f,%.1f,%.1f,%.1f)",
                     i, det.x0, det.y0, det.x1, det.y1, cx0, cy0, cx1, cy1);
             face_transform_log++;
         }
@@ -291,7 +291,7 @@ static void draw_face_detections(
         if (flip_h) { int t = drawMat.cols - x0; x0 = drawMat.cols - x1; x1 = t; }
         
         if (face_transform_log <= 3 && i == 0) {
-            LG_INFO("[RET] Draw camera=(%.1f,%.1f,%.1f,%.1f) -> canvas=(%d,%d,%d,%d) scale=(%.3f,%.3f) off=(%d,%d)",
+            LG_DEBUG("[RET] Draw camera=(%.1f,%.1f,%.1f,%.1f) -> canvas=(%d,%d,%d,%d) scale=(%.3f,%.3f) off=(%d,%d)",
                     cx0, cy0, cx1, cy1, x0, y0, x1, y1, scale_x, scale_y, offset_x, offset_y);
         }
         
@@ -391,9 +391,9 @@ static void draw_yolo_detections(
     // V6.2.3.5: Debug what detections we received
     static int debug_vis_det_count = 0;
     if (debug_vis_det_count < 3) {
-        LG_INFO("[VIS] Received %d detections from YOLOX", det_count);
+        LG_DEBUG("[VIS] Received %d detections from YOLOX", det_count);
         for (int i = 0; i < std::min(det_count, 3); ++i) {
-            LG_INFO("[VIS]   Det#%d: class=%d score=%.2f bbox=(%.1f,%.1f,%.1f,%.1f)",
+            LG_DEBUG("[VIS]   Det#%d: class=%d score=%.2f bbox=(%.1f,%.1f,%.1f,%.1f)",
                     i, dets[i].class_id, dets[i].score,
                     dets[i].x0, dets[i].y0, dets[i].x1, dets[i].y1);
         }
@@ -425,7 +425,7 @@ static void draw_yolo_detections(
         // Explicitly suppress other classes like tie (27), handbag (26), etc.
         if (det.class_id != 0) {
             if (debug_draw_count < 3 && i < 3) {
-                LG_INFO("[VIS] Skipping Det#%d: class=%d (not person)", i, det.class_id);
+                LG_DEBUG("[VIS] Skipping Det#%d: class=%d (not person)", i, det.class_id);
             }
             continue;
         }
@@ -433,7 +433,7 @@ static void draw_yolo_detections(
         // Skip low-confidence detections (shadows, false positives)
         if (det.score < min_confidence) {
             if (debug_draw_count < 3) {
-                LG_INFO("[VIS] Skipping Det#%d: score=%.2f below threshold %.2f", i, det.score, min_confidence);
+                LG_DEBUG("[VIS] Skipping Det#%d: score=%.2f below threshold %.2f", i, det.score, min_confidence);
             }
             continue;
         }
@@ -474,11 +474,11 @@ static void draw_yolo_detections(
 
         // V6.2.3.5.3: Enhanced debug - show what we're actually drawing
         if (debug_draw_count < 3 && i < 2) {
-            LG_INFO("[VIS-DEBUG] Det#%d BEFORE transform: camera=(%.1f,%.1f,%.1f,%.1f)", 
+            LG_DEBUG("[VIS-DEBUG] Det#%d BEFORE transform: camera=(%.1f,%.1f,%.1f,%.1f)", 
                     i, det.x0, det.y0, det.x1, det.y1);
-            LG_INFO("[VIS-DEBUG] Det#%d Transform params: scale=(%.3f,%.3f) offset=(%d,%d)",
+            LG_DEBUG("[VIS-DEBUG] Det#%d Transform params: scale=(%.3f,%.3f) offset=(%d,%d)",
                     i, scale_x, scale_y, offset_x, offset_y);
-            LG_INFO("[VIS-DEBUG] Det#%d AFTER transform: canvas=(%d,%d,%d,%d) [will draw on CANVAS size=%dx%d]",
+            LG_DEBUG("[VIS-DEBUG] Det#%d AFTER transform: canvas=(%d,%d,%d,%d) [will draw on CANVAS size=%dx%d]",
                     i, x0, y0, x1, y1, drawMat.cols, drawMat.rows);
             if (i == det_count - 1 || i == 1) debug_draw_count++;
         }
@@ -508,7 +508,7 @@ static void draw_yolo_detections(
     }
 
     #ifdef DEBUG_LOGS
-    LG_INFO("overlay: YOLO persons=%d (total_objects=%d)", person_count, det_count);
+    LG_DEBUG("overlay: YOLO persons=%d (total_objects=%d)", person_count, det_count);
     #endif
 }
 
@@ -567,7 +567,7 @@ static void blur_persons(
         output::blur_faces(drawMat, person_bboxes, blur_config);
         static int blur_log_count = 0;
         if (blur_log_count < 5 || blur_log_count % 30 == 0) {
-            LG_INFO("[VIS-BLUR] Applied person blur to %zu regions (inset=%dpx)",
+            LG_DEBUG("[VIS-BLUR] Applied person blur to %zu regions (inset=%dpx)",
                     person_bboxes.size(), box_thickness);
         }
         blur_log_count++;
@@ -606,7 +606,7 @@ void process_inference_results(
     cv::Mat drawMat = rgb_mat; // alias for drawing
     
     // V6.2.3.5.4: Log actual canvas dimensions at draw time
-    LG_INFO("[VIS-CANVAS] drawMat actual size: %dx%d (rgb_mat: %dx%d)", 
+    LG_DEBUG("[VIS-CANVAS] drawMat actual size: %dx%d (rgb_mat: %dx%d)", 
             drawMat.cols, drawMat.rows, rgb_mat.cols, rgb_mat.rows);
     
     // V6.2.3.5: FIXED - Calculate letterbox parameters to map camera coords to canvas
@@ -634,11 +634,11 @@ void process_inference_results(
         // V6.2.3.5.3: Enhanced debug logging  
         static int debug_vis_count = 0;
         if (debug_vis_count < 3) {
-            LG_INFO("[VIS-INIT] canvas_size=%dx%d camera_size=%dx%d",
+            LG_DEBUG("[VIS-INIT] canvas_size=%dx%d camera_size=%dx%d",
                     rgb_mat.cols, rgb_mat.rows, orig_width, orig_height);
-            LG_INFO("[VIS-INIT] letterbox_scale=%.3f letterbox_size=%dx%d offset=(%d,%d)",
+            LG_DEBUG("[VIS-INIT] letterbox_scale=%.3f letterbox_size=%dx%d offset=(%d,%d)",
                     letterbox_scale, letterbox_w, letterbox_h, offset_x, offset_y);
-            LG_INFO("[VIS-INIT] transform: scale_x=%.3f scale_y=%.3f offset_x=%d offset_y=%d",
+            LG_DEBUG("[VIS-INIT] transform: scale_x=%.3f scale_y=%.3f offset_x=%d offset_y=%d",
                     scale_x, scale_y, offset_x, offset_y);
             debug_vis_count++;
         }
@@ -672,7 +672,7 @@ void process_inference_results(
     // V7.1: Pass orig_width/orig_height for dynamic de-letterbox calculation
     static int draw_debug_count = 0;
     if (draw_debug_count < 3) {
-        LG_INFO("[VIS-DRAW] retinaface_runner=%p yolox_runner=%p fusion_output=%p blur=%s",
+        LG_DEBUG("[VIS-DRAW] retinaface_runner=%p yolox_runner=%p fusion_output=%p blur=%s",
                 retinaface_runner, yolox_runner, fusion_output,
                 blur_config.enabled ? "enabled" : "disabled");
         draw_debug_count++;
@@ -723,7 +723,7 @@ void process_inference_results(
     // This blue rectangle should contain the entire visible scene
     static int guide_debug_count = 0;
     if (guide_debug_count < 5) {
-        LG_INFO("[VIS-GUIDE-CHECK] canvas=%dx%d camera=%dx%d condition=%s",
+        LG_DEBUG("[VIS-GUIDE-CHECK] canvas=%dx%d camera=%dx%d condition=%s",
                 rgb_mat.cols, rgb_mat.rows, orig_width, orig_height,
                 (rgb_mat.cols == 320 && rgb_mat.rows == 320 && orig_width == 640 && orig_height == 480) ? "YES" : "NO");
         guide_debug_count++;
@@ -735,7 +735,7 @@ void process_inference_results(
                       cv::Point(320, 280),        // Bottom-right (320x240 rect)
                       cv::Scalar(255, 0, 0),      // Blue color (BGR)
                       2);                          // 2px line
-        LG_INFO("[VIS-GUIDE] Drew 320x240 blue guide rectangle at offset (0,40) to (320,280)");
+        LG_DEBUG("[VIS-GUIDE] Drew 320x240 blue guide rectangle at offset (0,40) to (320,280)");
     }
 
     // Save annotated frame as JPEG

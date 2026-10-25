@@ -228,7 +228,6 @@ int inference_yolox_model(rknn_app_context_t *app_ctx, image_buffer_t *img, obje
     }
 
     // Run
-    printf("rknn_run\n");
     ret = rknn_run(app_ctx->rknn_ctx, nullptr);
     if (ret < 0) {
         printf("rknn_run fail! ret=%d\n", ret);

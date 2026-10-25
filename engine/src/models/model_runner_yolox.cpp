@@ -226,7 +226,7 @@ bool RKNNYoloXRunner::infer(const FrameView& in, InferenceOutputs& out) noexcept
     // V6.2.3.2: Debug logging (first 3 frames only)
     static int debug_deletter_count = 0;
     if (debug_deletter_count < 3 && p_->od_results.count > 0) {
-        LG_INFO("[YOLOX] De-letterbox: orig=%dx%d model=%dx%d scale=%.3f letterbox=%dx%d pad=(%d,%d)",
+        LG_DEBUG("[YOLOX] De-letterbox: orig=%dx%d model=%dx%d scale=%.3f letterbox=%dx%d pad=(%d,%d)",
                 orig_w, orig_h, model_w, model_h, scale, letterbox_w, letterbox_h, pad_x, pad_y);
         debug_deletter_count++;
     }
@@ -249,7 +249,7 @@ bool RKNNYoloXRunner::infer(const FrameView& in, InferenceOutputs& out) noexcept
         
         // V6.2.3.5.2: Debug - log what we're getting from RKNN BEFORE assignment
         if (debug_deletter_count <= 3 && i < 2) {
-            LG_INFO("[YOLOX-DEBUG] Det#%d: FROM RKNN: cls_id=%d prop=%.2f name='%s'",
+            LG_DEBUG("[YOLOX-DEBUG] Det#%d: FROM RKNN: cls_id=%d prop=%.2f name='%s'",
                     i, obj_det.cls_id, obj_det.prop, obj_det.name);
         }
         
@@ -259,7 +259,7 @@ bool RKNNYoloXRunner::infer(const FrameView& in, InferenceOutputs& out) noexcept
         
         // V6.2.3.2: Debug first few detections to verify de-letterbox
         if (debug_deletter_count <= 3 && i < 2) {
-            LG_INFO("[YOLOX] Det#%d: letterbox=(%.1f,%.1f,%.1f,%.1f) -> camera=(%.1f,%.1f,%.1f,%.1f) class=%d score=%.2f",
+            LG_DEBUG("[YOLOX] Det#%d: letterbox=(%.1f,%.1f,%.1f,%.1f) -> camera=(%.1f,%.1f,%.1f,%.1f) class=%d score=%.2f",
                     i, x0_letter, y0_letter, x1_letter, y1_letter,
                     d.x0, d.y0, d.x1, d.y1, d.class_id, d.score);
         }

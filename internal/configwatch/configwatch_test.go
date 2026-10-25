@@ -10,7 +10,7 @@ import (
 
 func TestWatchFiresOnChange(t *testing.T) {
 	dir := t.TempDir()
-	p := filepath.Join(dir, "watcher.json")
+	p := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(p, []byte(`{"v":1}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
