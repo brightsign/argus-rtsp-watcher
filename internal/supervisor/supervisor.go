@@ -103,6 +103,18 @@ func (s *Supervisor) Run(ctx context.Context, initial []Spec) {
 // removed streams, and restarts streams whose Fingerprint changed.
 // Untouched streams keep running.
 func (s *Supervisor) Reconcile(specs []Spec) {
+	s.reconcile(specs, nil)
+}
+
+// ReconcileAndRestart is Reconcile that also restarts every running stream
+// for which shouldRestart returns true, even when its Fingerprint is
+// unchanged. It lets an operator force a clean restart of processes whose
+// inputs live outside their spec (for example a mediamtx.yml edited in place).
+func (s *Supervisor) ReconcileAndRestart(specs []Spec, shouldRestart func(id string) bool) {
+	s.reconcile(specs, shouldRestart)
+}
+
+func (s *Supervisor) reconcile(specs []Spec, shouldRestart func(id string) bool) {
 	s.reconcileMu.Lock()
 	defer s.reconcileMu.Unlock()
 
@@ -122,7 +134,8 @@ func (s *Supervisor) Reconcile(specs []Spec) {
 	var toStop []stopping
 	for id, h := range s.running {
 		d, ok := desired[id]
-		if !ok || d.Fingerprint != h.spec.Fingerprint {
+		forced := ok && shouldRestart != nil && shouldRestart(id)
+		if !ok || forced || d.Fingerprint != h.spec.Fingerprint {
 			toStop = append(toStop, stopping{id: id, handle: h, removed: !ok})
 			delete(s.running, id)
 		}
@@ -134,8 +147,12 @@ func (s *Supervisor) Reconcile(specs []Spec) {
 	// A removed stream's status entry is cleared only once its goroutine
 	// has fully exited, so a record() call still in flight cannot recreate
 	// the entry after it is deleted.
+	// Cancel every stopping stream before waiting on any, so their shutdown
+	// grace periods overlap instead of adding up across a global restart.
 	for _, st := range toStop {
 		st.handle.cancel()
+	}
+	for _, st := range toStop {
 		<-st.handle.done
 		if st.removed {
 			s.mu.Lock()

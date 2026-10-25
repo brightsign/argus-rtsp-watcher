@@ -1,64 +1,85 @@
 /**
  * @file test_frame_stamp.cpp
- * @brief Unit tests for encode_frame_stamp_bytes(), the pure byte/checksum
- * encoder behind the machine-readable frame stamp (see
- * orchestration/frame_stamp.h and draw_frame_stamp() in
- * orchestration/inference_worker.cpp for the pixel layout that consumes it).
+ * @brief Unit tests for format_frame_stamp_text(), the pure formatter behind the
+ * human-readable frame stamp (see orchestration/frame_stamp.h and
+ * draw_frame_stamp() in orchestration/inference_worker.cpp, which draws it).
  */
 
 #include <gtest/gtest.h>
 #include "orchestration/frame_stamp.h"
 
-using inference_worker::encode_frame_stamp_bytes;
+using inference_worker::format_frame_stamp_text;
 
-TEST(FrameStampEncode, ZeroSeqEncodesToAllZeroBytes) {
-    auto bytes = encode_frame_stamp_bytes(0);
-    for (uint8_t b : bytes) {
-        EXPECT_EQ(b, 0);
-    }
+namespace {
+
+// 2026-10-25T13:29:53.925Z, computed independently of the code under test.
+constexpr int64_t kWallNs = 1792934993925000000LL;
+constexpr int64_t kMillisecondNs = 1000000LL;
+
+}  // namespace
+
+TEST(FrameStampText, FormatsSequenceAndUtcWithMilliseconds) {
+    EXPECT_EQ(format_frame_stamp_text(14984, kWallNs, 0), "#14984  2026-10-25T13:29:53.925Z");
 }
 
-TEST(FrameStampEncode, KnownValueIsMsbFirst) {
-    auto bytes = encode_frame_stamp_bytes(0x0102030405060708ULL);
-    EXPECT_EQ(bytes[0], 0x01);
-    EXPECT_EQ(bytes[1], 0x02);
-    EXPECT_EQ(bytes[2], 0x03);
-    EXPECT_EQ(bytes[3], 0x04);
-    EXPECT_EQ(bytes[4], 0x05);
-    EXPECT_EQ(bytes[5], 0x06);
-    EXPECT_EQ(bytes[6], 0x07);
-    EXPECT_EQ(bytes[7], 0x08);
-
-    const uint8_t expected_checksum = 0x01 ^ 0x02 ^ 0x03 ^ 0x04 ^ 0x05 ^ 0x06 ^ 0x07 ^ 0x08;
-    EXPECT_EQ(bytes[8], expected_checksum);
+TEST(FrameStampText, PadsMillisecondsAndFormatsTheEpoch) {
+    EXPECT_EQ(format_frame_stamp_text(0, 5 * kMillisecondNs, 0), "#0  1970-01-01T00:00:00.005Z");
 }
 
-TEST(FrameStampEncode, MaxSeqEncodesToAllOnesWithZeroChecksum) {
-    auto bytes = encode_frame_stamp_bytes(UINT64_MAX);
-    for (int i = 0; i < 8; ++i) {
-        EXPECT_EQ(bytes[static_cast<size_t>(i)], 0xFF);
-    }
-    // XOR of eight identical 0xFF bytes is 0.
-    EXPECT_EQ(bytes[8], 0x00);
+TEST(FrameStampText, ShowsLagWhenCameraTimeIsKnown) {
+    // The camera captured the frame 55 ms before the engine received it.
+    EXPECT_EQ(format_frame_stamp_text(14984, kWallNs, kWallNs - 55 * kMillisecondNs),
+              "#14984  2026-10-25T13:29:53.925Z  lag 55ms");
 }
 
-TEST(FrameStampEncode, ChecksumIsDeterministicAndReproducible) {
-    auto a = encode_frame_stamp_bytes(123456789ULL);
-    auto b = encode_frame_stamp_bytes(123456789ULL);
-    EXPECT_EQ(a, b);
+TEST(FrameStampText, ShowsNegativeLagWhenTheCameraClockIsAhead) {
+    EXPECT_EQ(format_frame_stamp_text(1, kWallNs, kWallNs + 12 * kMillisecondNs),
+              "#1  2026-10-25T13:29:53.925Z  lag -12ms");
 }
 
-TEST(FrameStampEncode, ChecksumDetectsSingleByteCorruption) {
-    auto bytes = encode_frame_stamp_bytes(987654321ULL);
+TEST(FrameStampText, TruncatesSubMillisecondLag) {
+    EXPECT_EQ(format_frame_stamp_text(1, kWallNs, kWallNs - 55900000LL),
+              "#1  2026-10-25T13:29:53.925Z  lag 55ms");
+}
 
-    // Simulate a decoder misreading one cell (e.g. a JPEG artifact flips a
-    // sampled bit): corrupt one seq byte and confirm the checksum no longer
-    // matches, which is the whole point of carrying it.
-    bytes[3] ^= 0x01;
+TEST(FrameStampText, ZeroLagIsStillShownWhenCameraTimeIsKnown) {
+    // Lag 0 is a real measurement (it is also what a proxy that re-times the
+    // stream would show), and must not be confused with "unavailable".
+    EXPECT_EQ(format_frame_stamp_text(1, kWallNs, kWallNs), "#1  2026-10-25T13:29:53.925Z  lag 0ms");
+}
 
-    uint8_t recomputed_checksum = 0;
-    for (int i = 0; i < 8; ++i) {
-        recomputed_checksum ^= bytes[static_cast<size_t>(i)];
-    }
-    EXPECT_NE(recomputed_checksum, bytes[8]);
+TEST(FrameStampText, NoLagWhenCameraTimeIsUnavailable) {
+    EXPECT_EQ(format_frame_stamp_text(1, kWallNs, 0), "#1  2026-10-25T13:29:53.925Z");
+    EXPECT_EQ(format_frame_stamp_text(1, kWallNs, -1), "#1  2026-10-25T13:29:53.925Z");
+}
+
+TEST(FrameStampText, LargeSequenceNumbersPrintInFull) {
+    EXPECT_EQ(format_frame_stamp_text(UINT64_MAX, kWallNs, 0),
+              "#18446744073709551615  2026-10-25T13:29:53.925Z");
+}
+
+TEST(FrameStampText, ShowsTheRunningAverageAfterTheLag) {
+    EXPECT_EQ(format_frame_stamp_text(1, kWallNs, kWallNs - 55 * kMillisecondNs, 61),
+              "#1  2026-10-25T13:29:53.925Z  lag 55ms  avg15s 61ms");
+}
+
+TEST(FrameStampText, ShowsANegativeAverage) {
+    EXPECT_EQ(format_frame_stamp_text(1, kWallNs, kWallNs + 12 * kMillisecondNs, -12),
+              "#1  2026-10-25T13:29:53.925Z  lag -12ms  avg15s -12ms");
+}
+
+TEST(FrameStampText, ZeroAverageIsStillShown) {
+    EXPECT_EQ(format_frame_stamp_text(1, kWallNs, kWallNs, 0),
+              "#1  2026-10-25T13:29:53.925Z  lag 0ms  avg15s 0ms");
+}
+
+TEST(FrameStampText, NoAverageWithoutTheCurrentLag) {
+    // With no camera time for this frame there is no lag to put the average
+    // beside, and a leftover average from earlier frames would read as current.
+    EXPECT_EQ(format_frame_stamp_text(1, kWallNs, 0, 61), "#1  2026-10-25T13:29:53.925Z");
+}
+
+TEST(FrameStampText, AverageLabelNamesTheWindowItUses) {
+    const std::string label = "avg" + std::to_string(metrics::kLagAverageWindowSeconds) + "s";
+    EXPECT_NE(format_frame_stamp_text(1, kWallNs, kWallNs, 5).find(label), std::string::npos);
 }

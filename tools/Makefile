@@ -1,6 +1,6 @@
-# Host-side analysis tools for Argus RTSP Watcher recordings.
+# Host-side analysis tools for Argus RTSP Watcher.
 # These are host tools (stdlib only); they are NOT cross-compiled into the
-# player extension. record-frames.sh needs no build.
+# player extension. The zone-picker scripts need no build.
 
 GO  ?= go
 
@@ -12,10 +12,7 @@ help: ## List targets
 		awk 'BEGIN{FS=":.*?## "}{printf "  %-12s %s\n", $$1, $$2}'
 
 .PHONY: build
-build: bin/framebox bin/boxstats ## Build all tool binaries into ./bin
-
-bin/framebox: $(wildcard cmd/framebox/*.go) $(wildcard internal/analytics/*.go) go.mod
-	$(GO) build -o bin/framebox ./cmd/framebox
+build: bin/boxstats ## Build all tool binaries into ./bin
 
 bin/boxstats: $(wildcard cmd/boxstats/*.go) $(wildcard internal/analytics/*.go) go.mod
 	$(GO) build -o bin/boxstats ./cmd/boxstats

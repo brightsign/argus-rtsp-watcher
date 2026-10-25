@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cmath>
 #include <thread>
 #include <iostream>
 #include <unordered_set>
@@ -18,6 +19,7 @@
 #include "metrics/file_logger.h"
 #include "metrics/log_global.h"
 #include "metrics/stage_stats.h"
+#include "metrics/windowed_average.h"
 #include "models/model_factory.h"
 #include "models/model_runner.h"
 #include "models/model_runner_retinaface.h"
@@ -219,6 +221,7 @@ bool Orchestrator::build_pipeline() noexcept {
 
   resolve_usb_device(cfg_.input);
   cfg_.input.rtsp.label = device_id_;
+  cfg_.input.rtsp.camera_time = cfg_.enable_camera_time;
   std::unique_ptr<IInputSource> input_tmp;
   try { input_tmp = make_input(cfg_.input); } catch (...) { input_tmp.reset(); }
   if (!input_tmp) { LG_ERROR("[orch] failed to create input\n"); return false; }
@@ -804,6 +807,12 @@ void Orchestrator::supervisor_loop() noexcept {
         result.ts_ns = static_cast<uint64_t>(now);
         result.seq = current_seq;
         result.capture_wall_ns = capture_wall_ns_.load(std::memory_order_relaxed);
+        // The person boxes in this message come from the latest inferred frame,
+        // which lags the newest capture named by seq above. Read its identity under
+        // the same lock as the detections so the two can never disagree.
+        result.det_seq = fusion_.yolo_seq;
+        result.det_capture_wall_ns = fusion_.yolo_capture_wall_ns;
+        result.det_source_wall_ns = fusion_.yolo_source_wall_ns;
         result.fps = calculated_fps;
         result.frame_width = fusion_.frame_width;   // V6.2: For normalized speed
         result.frame_height = fusion_.frame_height; // V6.2: For normalized speed
@@ -1188,6 +1197,7 @@ bool Orchestrator::recover_pipeline(int64_t now_ns_val) noexcept {
 
     std::unique_ptr<IInputSource> new_input_tmp;
     cfg_.input.rtsp.label = device_id_;
+    cfg_.input.rtsp.camera_time = cfg_.enable_camera_time;
     try { new_input_tmp = make_input(cfg_.input); } catch (...) { new_input_tmp.reset(); }
     if (!new_input_tmp) {
         LG_ERROR("recover_pipeline:failed to create input\n");
@@ -1303,6 +1313,9 @@ void Orchestrator::capture_loop_threadfn() noexcept {
     constexpr int64_t kTimingWindowNs = 1000000000LL;
     metrics::StageStats copy_stats, light_stats;
     int64_t timing_window_start_ns = metrics::steady_now_ns();
+    uint64_t frames_with_camera_time = 0;  // within the current window
+    int64_t last_camera_lag_ms = 0;        // engine capture minus camera capture, latest frame
+    metrics::WindowedAverage lag_average(metrics::kLagAverageWindowNs);  // shown on the stamp
 
     while (!stop_capture_.load(std::memory_order_relaxed)) {
         // Try to fetch next frame from input source
@@ -1335,6 +1348,15 @@ void Orchestrator::capture_loop_threadfn() noexcept {
         clock_gettime(CLOCK_REALTIME, &wall_ts);
         sf->capture_wall_ns = static_cast<int64_t>(wall_ts.tv_sec) * 1000000000LL + wall_ts.tv_nsec;
         capture_wall_ns_.store(sf->capture_wall_ns, std::memory_order_relaxed);
+        sf->source_wall_ns = camView.source_wall_ns;
+        if (sf->source_wall_ns > 0) {
+            ++frames_with_camera_time;
+            last_camera_lag_ms = (sf->capture_wall_ns - sf->source_wall_ns) / 1000000LL;
+            // Averaged here, over every captured frame, because the stamp is drawn
+            // on only some of them; it travels to the stamp inside the frame.
+            lag_average.add(metrics::steady_now_ns(), last_camera_lag_ms);
+            sf->lag_average_ms = static_cast<int64_t>(std::llround(*lag_average.mean()));
+        }
 
         // V7.1: Preserve original camera/stream dimensions for coordinate transforms
         // RTSP: orig=1920×1080, preprocessed=320×320
@@ -1383,13 +1405,17 @@ void Orchestrator::capture_loop_threadfn() noexcept {
 
         if (light_end_ns - timing_window_start_ns >= kTimingWindowNs) {
             LG_DEBUG("capture_loop: stage ms avg/max device=%s frames=%llu size=%dx%d "
-                     "copy=%.1f/%.1f light=%.1f/%.1f",
+                     "copy=%.1f/%.1f light=%.1f/%.1f camera_time=%llu/%llu last_lag_ms=%lld",
                      device_id_.c_str(),
                      (unsigned long long)copy_stats.count(), sf->width, sf->height,
                      copy_stats.average_ms(), copy_stats.max_ms(),
-                     light_stats.average_ms(), light_stats.max_ms());
+                     light_stats.average_ms(), light_stats.max_ms(),
+                     (unsigned long long)frames_with_camera_time,
+                     (unsigned long long)copy_stats.count(),
+                     (long long)last_camera_lag_ms);
             copy_stats.reset();
             light_stats.reset();
+            frames_with_camera_time = 0;
             timing_window_start_ns = light_end_ns;
         }
     }
@@ -1434,7 +1460,7 @@ void Orchestrator::face_loop_threadfn() noexcept {
         inference_worker::run_inference_loop(
             face_runner_.get(),
             mb_wrapper,
-            reinterpret_cast<FusionResults*>(&fusion_),
+            &fusion_,
             /*frame_writer=*/nullptr,
             config,
             stop_face_);
@@ -1491,7 +1517,7 @@ void Orchestrator::yolo_loop_threadfn() noexcept {
         inference_worker::run_inference_loop(
             yolo_runner_.get(),
             mb_wrapper,
-            reinterpret_cast<FusionResults*>(&fusion_),
+            &fusion_,
             frame_writer_yolo_.get(),
             config,
             stop_yolo_,

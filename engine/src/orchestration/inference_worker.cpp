@@ -17,6 +17,7 @@
 #include <opencv2/imgproc.hpp>
 #include <rga/rga.h>
 #include <rga/im2d.h>
+#include <optional>
 #include <thread>
 #include <chrono>
 #include <cstring>
@@ -32,113 +33,37 @@ static bool should_process_frame(uint64_t seq, int skip_frames) noexcept {
     return (seq & (skip_frames - 1)) == 0;  // Bitmask for power-of-2 skip
 }
 
-// Fixed pixel layout for the machine-readable frame_seq stamp, documented
-// here so an external decoder can sample cell centers directly from a
-// recorded (possibly JPEG-recompressed) frame with no other context.
+// Layout of the human-readable frame stamp.
 //
-//   - Scale: the whole stamp scales continuously with frame height H
-//     (= canvas.rows) so it reads the same at any resolution. Each base px
-//     dimension D below is drawn at scaled(D) = max(D, round(D*H/kStampScaleRefPx))
-//     px (kStampScaleRefPx = 600; round via integer (D*H + 300)/600). So
-//     cell = scaled(kStampCellPx), margin = scaled(kStampMarginPx),
-//     text_band = scaled(kStampTextBandPx). A decoder MUST compute
-//     cell/margin/text_band the same way from H before sampling.
-//   - Both stamps sit in the lower-left corner, stacked: the human-readable
-//     text is pinned to the very bottom of the frame, and the machine-readable
-//     bit grid sits directly ABOVE it. Positions are bottom-anchored (depend
-//     on H).
-//   - Text band: the bottom text_band px are reserved for the human-readable
-//     line (its baseline is at H - margin).
-//   - Quiet zone: a solid black rectangle, one cell wide on every side, drawn
-//     from (margin, H - text_band - quiet_h) to (margin + quiet_w,
-//     H - text_band), where quiet_w = (kStampCols + 2) * cell and
-//     quiet_h = (kStampRows + 2) * cell.
-//   - Bit grid: kStampCols (8) columns x kStampRows (9) rows of solid
-//     cell x cell px cells, starting one cell in from the quiet zone's outer
-//     edge, i.e. grid cell [0,0]'s top-left corner is at
-//     grid_x0 = margin + cell,
-//     grid_y0 = H - text_band - quiet_h + cell
-//             = H - text_band - (kStampRows + 1) * cell.
-//   - Cell color: pure black (0,0,0) = bit 0, pure white (255,255,255) =
-//     bit 1. cell is >= 10px (scale >= 1) so cells survive JPEG.
-//   - Bit order: row r in [0,7] holds seq byte r MSB-first (row 0 = bits
-//     63-56 of frame_seq, row 7 = bits 7-0); row 8 holds an 8-bit XOR
-//     checksum of those 8 bytes, letting a decoder validate the read before
-//     trusting it. Within a row, column c in [0,7] holds bit (7-c) of that
-//     row's byte (MSB first, left to right).
-//     See encode_frame_stamp_bytes() (orchestration/frame_stamp.h) for the
-//     exact byte/checksum computation, unit tested independently.
-//   - A decoder samples the pixel at each cell's center: cell [row,col]'s
-//     center is at (grid_x0 + col*cell + cell/2, grid_y0 + row*cell + cell/2).
+//   - Scale: the stamp scales continuously with frame height H (= canvas.rows)
+//     so it reads the same at any resolution. Each base px dimension D below is
+//     drawn at scaled(D) = max(D, round(D*H/kStampScaleRefPx)) px
+//     (kStampScaleRefPx = 600; round via integer (D*H + 300)/600).
+//   - The text sits in the lower-left corner, pinned to the very bottom of the
+//     frame (its baseline is at H - margin), on a filled black box.
+//   - It is for a person to see that time is advancing. A program relates
+//     boxes to a frame through the MQTT det_seq/det_ts/source_ts fields.
 namespace {
-// BASE (1x) sizes; the drawn stamp multiplies these by an integer 'scale'
-// derived from frame height (see layout comment above).
-constexpr int kStampCellPx = 10;
+// BASE (1x) margin; the drawn stamp multiplies it by a factor derived from
+// frame height (see layout comment above).
 constexpr int kStampMarginPx = 4;
-constexpr int kStampCols = 8;
-constexpr int kStampRows = 9;  // 8 seq-byte rows + 1 checksum row
-// Reserved height (px, 1x) of the bottom band holding the human-readable line;
-// comfortably exceeds the ~19px the text occupies at font_scale 0.5, so the
-// bit grid drawn just above it never overlaps.
-constexpr int kStampTextBandPx = 28;
-// Frame-height reference for the integer scale factor: scale = max(1, round(H/ref)).
+// Frame-height reference for the scale factor: scale = max(1, round(H/ref)).
 constexpr int kStampScaleRefPx = 600;
 
-// Burns both stamps onto 'canvas' in-place, stacked in the lower-left corner:
-//  - Human-readable "#<seq>  <ISO-8601 UTC>.<ms>Z" text (white on a filled
-//    dark background) pinned to the very bottom, built from wall_ns.
-//  - Machine-readable bit grid directly ABOVE the text band (see layout above).
-void draw_frame_stamp(cv::Mat& canvas, uint64_t seq, int64_t wall_ns) {
+// Burns the frame stamp onto 'canvas' in-place, in the lower-left corner:
+// "#<seq>  <ISO-8601 UTC>.<ms>Z[  lag <ms>ms  avg15s <ms>ms]" (white on a filled
+// dark background), built from wall_ns. The lag suffix (engine time minus camera
+// capture time) appears only when source_wall_ns, the camera's own capture time,
+// is known; the running average follows it when lag_average_ms is supplied.
+void draw_frame_stamp(cv::Mat& canvas, uint64_t seq, int64_t wall_ns, int64_t source_wall_ns,
+                      std::optional<int64_t> lag_average_ms) {
     if (canvas.empty()) return;
 
-    // Scale the whole stamp (grid + text) continuously with frame height so it
-    // reads the same at any resolution; each dimension is floored at its base so
-    // low-res frames keep >=10px cells (JPEG-survivable). A decoder computes
-    // cell/margin/text_band the same way from H.
     const int H = canvas.rows;
     auto scaled = [H](int base) { return std::max(base, (H * base + kStampScaleRefPx / 2) / kStampScaleRefPx); };
-    const int cell = scaled(kStampCellPx);
     const int margin = scaled(kStampMarginPx);
-    const int text_band = scaled(kStampTextBandPx);
 
-    // --- Machine-readable bit grid (bottom-anchored, above the text band) ---
-    const int quiet_w = (kStampCols + 2) * cell;
-    const int quiet_h = (kStampRows + 2) * cell;
-    const int quiet_x0 = margin;
-    const int quiet_y0 = canvas.rows - text_band - quiet_h;
-    cv::rectangle(canvas,
-                  cv::Point(quiet_x0, quiet_y0),
-                  cv::Point(quiet_x0 + quiet_w, quiet_y0 + quiet_h),
-                  cv::Scalar(0, 0, 0), cv::FILLED);
-
-    const std::array<uint8_t, 9> stamp_bytes = encode_frame_stamp_bytes(seq);
-    const int grid_x0 = quiet_x0 + cell;
-    const int grid_y0 = quiet_y0 + cell;
-
-    for (int row = 0; row < kStampRows; ++row) {
-        const uint8_t byte_val = stamp_bytes[static_cast<size_t>(row)];
-        for (int col = 0; col < kStampCols; ++col) {
-            const bool bit = ((byte_val >> (7 - col)) & 0x1) != 0;
-            const cv::Scalar color = bit ? cv::Scalar(255, 255, 255) : cv::Scalar(0, 0, 0);
-            const int x0 = grid_x0 + col * cell;
-            const int y0 = grid_y0 + row * cell;
-            cv::rectangle(canvas, cv::Point(x0, y0),
-                          cv::Point(x0 + cell, y0 + cell),
-                          color, cv::FILLED);
-        }
-    }
-
-    // --- Human-readable stamp (pinned to the very bottom of the frame) ---
-    const time_t wall_secs = static_cast<time_t>(wall_ns / 1000000000LL);
-    const int wall_millis = static_cast<int>((wall_ns / 1000000LL) % 1000LL);
-    struct tm tm_utc{};
-    gmtime_r(&wall_secs, &tm_utc);
-
-    char text[96];
-    std::snprintf(text, sizeof(text), "#%llu  %04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
-                  static_cast<unsigned long long>(seq),
-                  tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday,
-                  tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec, wall_millis);
+    const std::string text = format_frame_stamp_text(seq, wall_ns, source_wall_ns, lag_average_ms);
 
     const int font = cv::FONT_HERSHEY_SIMPLEX;
     const double font_scale = std::max(0.5, 0.5 * H / static_cast<double>(kStampScaleRefPx));
@@ -269,9 +194,10 @@ static void store_inference_results(
     IModelRunner* runner,
     const InferenceOutputs& outs,
     FusionResults* fusion_output,
-    uint64_t seq) noexcept 
+    const SharedFrame& frame) noexcept
 {
     if (!fusion_output) return;
+    const uint64_t seq = frame.seq;
 
     std::lock_guard<std::mutex> g(fusion_output->m);
 
@@ -305,6 +231,8 @@ static void store_inference_results(
     } else if (yolox_runner) {
         fusion_output->yolo_dets.assign(outs.dets, outs.dets + outs.num_dets);
         fusion_output->yolo_seq = seq;
+        fusion_output->yolo_capture_wall_ns = frame.capture_wall_ns;
+        fusion_output->yolo_source_wall_ns = frame.source_wall_ns;
         
         #ifdef ENABLE_DEBUG
         if (seq % 30 == 0) {
@@ -438,7 +366,7 @@ void run_inference_loop(
             infer_stats.add_ns(infer_end_ns - resize_end_ns);
 
             // Store results in fusion output FIRST (before visualization)
-            store_inference_results(runner, outs, fusion_output, sf->seq);
+            store_inference_results(runner, outs, fusion_output, *sf);
 
             // Draw overlays on full-resolution camera frame (sf->bgr is now at original RTSP res)
             // Detection coords are in camera/orig space; with canvas == camera size, scale=1.0, offset=0
@@ -576,7 +504,8 @@ void run_inference_loop(
                 // painted over, and only when frame output is actually on
                 // (we're already inside the `if (frame_writer)` branch).
                 if (config.enable_frame_stamp) {
-                    draw_frame_stamp(vis_canvas, sf->seq, sf->capture_wall_ns);
+                    draw_frame_stamp(vis_canvas, sf->seq, sf->capture_wall_ns, sf->source_wall_ns,
+                                     sf->lag_average_ms);
                 }
 
                 const int64_t write_start_ns = metrics::steady_now_ns();

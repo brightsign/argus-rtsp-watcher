@@ -19,6 +19,11 @@ struct FrameView {
   uint8_t* plane0{nullptr};
   uint8_t* plane1{nullptr};       // nullptr when single-planar
   int64_t pts_ns{0};              // capture PTS in nanoseconds
+  // Camera capture time of this frame, nanoseconds since the Unix epoch, taken
+  // from RTCP sender reports. 0 = unavailable (no reports, or a clock that is
+  // not plausibly in sync with ours). Distinct from the engine's own capture
+  // stamp, which is taken after network, proxy and decode delay.
+  int64_t source_wall_ns{0};
   // V6.2.3.2: Original camera frame dimensions (before resize to model input size)
   // Used for de-letterboxing YOLOX detections back to camera coordinate space
   int orig_width{0};     // Original camera width (e.g., 1280)

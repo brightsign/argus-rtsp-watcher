@@ -53,6 +53,7 @@
     "log_json": true,
     "enable_frame_output": false,
     "enable_frame_stamp": true,
+    "enable_camera_time": true,
     "test_face_only": false,
     "test_yolo_only": false
   }

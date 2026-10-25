@@ -83,6 +83,9 @@ private:
   uint64_t last_ts_ns_{0};
   uint64_t frame_seq_{0};           // Video<->MQTT sync key (see PipelineResult.seq)
   int64_t  capture_wall_ns_{0};     // Wall-clock at capture, ns (-> frame_ts, ms)
+  uint64_t det_seq_{0};             // Frame the person boxes were detected on (see PipelineResult.det_seq)
+  int64_t  det_capture_wall_ns_{0}; // That frame's engine capture time, ns (-> det_ts, ms)
+  int64_t  det_source_wall_ns_{0};  // That frame's camera capture time, ns (-> source_ts, ms); 0 = null
   std::vector<TrackedBox> tracks_;  // Person tracks with stable IDs
 
   // In-zone event detector state (see detect_zone_event_locked). The rolling

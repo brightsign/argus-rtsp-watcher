@@ -48,17 +48,44 @@
   .thickpick .thickval { min-width: 28px; }
   .winpick { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; opacity: .85; }
   .winpick input[type=number] { width: 56px; }
+  /* global settings panel (applies to every stream) */
+  .panel { border: 1px solid rgba(127,127,127,.35); border-radius: 8px; padding: 10px; margin: 0 0 16px; }
+  .panel h2 { font-size: 15px; margin: 0 0 8px; }
+  .panel .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .panel .hint { font-size: 12px; opacity: .7; flex: 1 1 260px; }
+  .logpick { display: inline-flex; align-items: center; gap: 6px; }
+  button.warn { border-color: #ff9f43; color: #ff9f43; margin-left: auto; }
 </style>
 </head>
 <body>
 <h1>Argus Zone Dashboard</h1>
-<p class="sub">Draw a detection zone on each camera's live view, pick its match mode (any / base), outline color, line width, and alert-border width, set the person-detection <b>confidence</b> threshold, toggle <b>face detection</b> (gaze/attention) on or off, then Save that pane. Changes apply on the player within a few seconds (no reboot). The zone shows as a faint green outline on the video feed. <b>any</b> = any part of a person's box in the zone counts; <b>base</b> = only when their feet are in it. Turning face detection off cuts CPU/NPU load; person detection, tracking, and zones keep running.</p>
+<p class="sub">Draw a detection zone on each camera's live view, pick its match mode (any / base), outline color, line width, and alert-border width, set the person-detection <b>confidence</b> threshold, toggle <b>face detection</b> (gaze/attention) on or off, then Save that pane. Changes apply on the player within a few seconds (no reboot). The zone shows as a faint green outline on the video feed. <b>any</b> = any part of a person's box in the zone counts; <b>base</b> = only when their feet are in it. Turning face detection off cuts CPU/NPU load; person detection, tracking, and zones keep running. <b>Global settings</b> (log level) apply to every stream. <b>Restart services</b> re-reads <code>config.json</code> and <code>mediamtx.yml</code> and restarts mediamtx and all engines without a reboot.</p>
+<section class="panel" id="globals">
+  <h2>Global settings</h2>
+  <div class="row">
+    <label class="logpick" title="Engine log verbosity for every stream">Log level
+      <select id="loglevel">
+        <option value="">default (info)</option>
+        <option value="debug">debug</option>
+        <option value="info">info</option>
+        <option value="warn">warn</option>
+        <option value="error">error</option>
+        <option value="critical">critical</option>
+      </select>
+    </label>
+    <button class="primary" id="saveglobal" disabled>Save</button>
+    <span class="cardstatus" id="globalstatus"></span>
+    <span class="hint"><b>warn</b> silences routine output; <b>debug</b> is very verbose but adds per-stage timing lines. A new level applies by restarting each stream's engine, so video pauses briefly.</span>
+  </div>
+</section>
+
 <div id="cams"></div>
 
 <div id="bar">
   <button class="primary" id="save" disabled>Save &amp; apply</button>
   <button id="reload">Reload from player</button>
   <span id="status"></span>
+  <button class="warn" id="restart" title="Re-read config.json and mediamtx.yml, then restart mediamtx and every engine (no reboot)">Restart services</button>
 </div>
 
 <script>
@@ -68,9 +95,16 @@
   var camsEl = document.getElementById("cams");
   var statusEl = document.getElementById("status");
   var globalSaveBtn = document.getElementById("save");
-  var cfg = null;             // the full parsed config.json; we only edit streams[i].zone
+  var logLevelEl = document.getElementById("loglevel");
+  var saveGlobalBtn = document.getElementById("saveglobal");
+  var globalStatusEl = document.getElementById("globalstatus");
+  var restartBtn = document.getElementById("restart");
+  var LOG_LEVELS = ["debug", "info", "warn", "error", "critical"];
+  var RESTART_COOLDOWN_MS = 10000;  // services take a few seconds to return; block rapid re-clicks
+  var cfg = null;             // the full parsed config.json; we only edit streams[i] fields and log_level
   var cards = [];             // { idx, saveBtn } per rendered card, for dirty tracking
   var baseline = [];          // last-saved signature per stream; Save enables only on change
+  var baselineGlobal = "";    // last-saved global log level ("" = key absent)
   var msgTimers = new WeakMap(); // per status element: timer that auto-hides a "saved" message
 
   function setStatus(msg, cls) {
@@ -83,8 +117,13 @@
   function zoneSig(s) {
     return JSON.stringify([s.zone || null, s.zone_mode, s.zone_color, s.zone_thickness, s.zone_border_thickness, s.zone_window_minutes, s.confidence, s.detect_faces]);
   }
+  // globalSig is the dashboard-editable global state; "" means log_level is absent.
+  function globalSig() {
+    return cfg && cfg.log_level ? cfg.log_level : "";
+  }
   function snapshotBaseline() {
     baseline = Array.isArray(cfg && cfg.streams) ? cfg.streams.map(zoneSig) : [];
+    baselineGlobal = globalSig();
   }
   // Enable each pane's Save (and the global Save) only when that pane differs
   // from the last-saved state; grey them out otherwise.
@@ -95,6 +134,9 @@
       c.saveBtn.disabled = !dirty;
       if (dirty) anyDirty = true;
     });
+    var globalDirty = globalSig() !== baselineGlobal;
+    saveGlobalBtn.disabled = !globalDirty;
+    if (globalDirty) anyDirty = true;
     if (globalSaveBtn) globalSaveBtn.disabled = !anyDirty;
   }
 
@@ -319,6 +361,7 @@
       return;
     }
     cfg.streams.forEach(function (s, i) { camsEl.appendChild(makeCard(s, i)); });
+    logLevelEl.value = globalSig();
     snapshotBaseline();
     refreshDirty();
   }
@@ -329,6 +372,12 @@
       .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
       .then(function (j) {
         cfg = j;
+        // The watcher accepts any case and "warning"; the select offers only the
+        // canonical names, so normalize before the baseline is taken.
+        var level = String(cfg.log_level || "").toLowerCase();
+        if (level === "warning") level = "warn";
+        if (LOG_LEVELS.indexOf(level) >= 0) cfg.log_level = level;
+        else delete cfg.log_level;
         // Normalize the per-stream zone mode so the toggle and Save round-trip it
         // even when the file on the player predates the field (default: any).
         if (Array.isArray(cfg.streams)) {
@@ -365,14 +414,45 @@
       body: JSON.stringify(cfg, null, 2),
     })
       .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t || ("HTTP " + r.status)); }); return r.json(); })
-      .then(function () {
+      .then(function (result) {
         snapshotBaseline();
         refreshDirty();
-        showMsg(el, "saved — the watcher applies changes within a few seconds", "ok", isCard);
+        // The server SIGHUPs the watcher after the write; if that signal could
+        // not be sent, the watcher's file watch still applies it shortly.
+        var applied = result && result.reload_signaled
+          ? "saved — reload signaled, applying now"
+          : "saved — the watcher applies changes within a few seconds";
+        showMsg(el, applied, "ok", isCard);
       })
       .catch(function (e) { showMsg(el, "save failed: " + e.message, "err", isCard); });
   }
 
+  // restartServices asks the watcher to re-read config.json and mediamtx.yml and
+  // restart mediamtx and every engine. The custom header is required by the
+  // server so a page on another origin cannot trigger a restart.
+  function restartServices() {
+    var unsaved = !globalSaveBtn.disabled;
+    var question = "Restart mediamtx and all engines?\n\nconfig.json and mediamtx.yml are re-read. " +
+      "Video and detection pause for a few seconds.";
+    if (unsaved) question += "\n\nYou have unsaved changes; they are NOT included. Save first.";
+    if (!window.confirm(question)) return;
+
+    restartBtn.disabled = true;
+    setStatus("restarting services...");
+    fetch("/restart", { method: "POST", headers: { "X-Argus-Action": "restart" } })
+      .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t || ("HTTP " + r.status)); }); return r.json(); })
+      .then(function () { setStatus("restart signaled — mediamtx and the engines are coming back; previews resume in a few seconds", "ok"); })
+      .catch(function (e) { setStatus("restart failed: " + e.message, "err"); })
+      .then(function () { setTimeout(function () { restartBtn.disabled = false; }, RESTART_COOLDOWN_MS); });
+  }
+
+  logLevelEl.addEventListener("change", function () {
+    if (logLevelEl.value === "") delete cfg.log_level;
+    else cfg.log_level = logLevelEl.value;
+    refreshDirty();
+  });
+  saveGlobalBtn.addEventListener("click", function () { putConfig(globalStatusEl, true); });
+  restartBtn.addEventListener("click", restartServices);
   globalSaveBtn.addEventListener("click", function () { putConfig(statusEl, false); });
   document.getElementById("reload").addEventListener("click", load);
   load();

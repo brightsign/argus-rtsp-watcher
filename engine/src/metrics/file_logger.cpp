@@ -69,10 +69,12 @@ void FileRotatingLogger::vwrite(LogLevel lvl, const char* fmt, va_list ap) noexc
   if (utc_time_) gmtime_r(&tt, &tm);
   else           localtime_r(&tt, &tm);
 
+  // A Z suffix marks UTC so the zone is never ambiguous when comparing a log
+  // line against the on-frame stamp or an MQTT timestamp.
   char prefix[96];
-  std::snprintf(prefix, sizeof(prefix), "%04d-%02d-%02d %02d:%02d:%02d.%06ld [%s] ",
+  std::snprintf(prefix, sizeof(prefix), "%04d-%02d-%02d %02d:%02d:%02d.%06ld%s [%s] ",
     tm.tm_year+1900, tm.tm_mon+1, tm.tm_mday,
-    tm.tm_hour, tm.tm_min, tm.tm_sec, (long)us, level_str(lvl));
+    tm.tm_hour, tm.tm_min, tm.tm_sec, (long)us, utc_time_ ? "Z" : "", level_str(lvl));
 
   char msg[2048];
   va_list ap2; va_copy(ap2, ap);

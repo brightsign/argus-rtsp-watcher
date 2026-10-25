@@ -2,6 +2,7 @@
 #define SHARED_FRAME_H
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 #include <memory>
 
@@ -15,6 +16,10 @@ struct SharedFrame {
     int64_t  pts_ns{0};      ///< Presentation timestamp (nanoseconds)
     uint64_t seq{0};         ///< Sequence number for ordering
     int64_t  capture_wall_ns{0}; ///< CLOCK_REALTIME ns minted alongside seq; joins recorded video to MQTT by frame_seq/frame_ts
+    int64_t  source_wall_ns{0};  ///< Camera's own capture time (Unix epoch ns) from RTCP; 0 = unavailable
+    /// Running mean of camera-to-engine lag (ms) over the last metrics::kLagAverageWindowSeconds,
+    /// across every captured frame including this one; empty when this frame has no camera time.
+    std::optional<int64_t> lag_average_ms;
 
     int width{0};            ///< Frame width in pixels (preprocessed/resized)
     int height{0};           ///< Frame height in pixels (preprocessed/resized)

@@ -125,6 +125,7 @@ int main(int argc, char** argv) {
     // ---- logging (initial setup - use /tmp to avoid boot-time SD mount race) ----
     FileRotatingLogger::Config logcfg;
     logcfg.path = kEngineLogFallbackPath;
+    logcfg.utc_time = true;  // match the UTC on-frame stamp and MQTT timestamps
     logcfg.max_mb = 5;
     logcfg.max_files = 5;
     logcfg.min_level = LogLevel::Info;  // Start with Info, will be updated from config
@@ -184,6 +185,7 @@ int main(int argc, char** argv) {
       std::string log_path = appcfg.log_dir + "/" + kEngineLogFileName;
       FileRotatingLogger::Config cfg2;
       cfg2.path      = log_path;
+      cfg2.utc_time  = true;
       cfg2.max_mb    = 5;
       cfg2.max_files = 5;
       cfg2.min_level = flog->level();
@@ -312,6 +314,7 @@ int main(int argc, char** argv) {
     pc.max_frames = appcfg.max_frames;
     pc.frame_quality = appcfg.frame_quality;
     pc.enable_frame_stamp = appcfg.enable_frame_stamp;
+    pc.enable_camera_time = appcfg.enable_camera_time;
 
     // Configure custom detection zone (emitted as an additive per-track in_zone).
     pc.zone.enabled = appcfg.zone.enabled;

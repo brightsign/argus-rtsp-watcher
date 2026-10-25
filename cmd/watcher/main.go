@@ -43,6 +43,10 @@ const (
 	// supervised as a single process (ID mediamtxID) when config.json enables it.
 	mediamtxBinary = "mediamtx"
 	mediamtxID     = "mediamtx"
+
+	// configServerID is the on-player dashboard. A global restart leaves it
+	// running so the page that requested the restart still gets its response.
+	configServerID = "config-server"
 )
 
 func main() {
@@ -108,8 +112,10 @@ func main() {
 	defer stop()
 
 	// Live reconciliation: re-read config.json on file change or SIGHUP and
-	// drive the supervisor toward the new desired stream set.
-	reload := func() {
+	// drive the supervisor toward the new desired stream set. A non-nil
+	// restartID additionally forces a restart of every process it selects, so
+	// edits that leave a process's spec fingerprint unchanged still take effect.
+	reconcileFromConfig := func(restartID func(id string) bool) {
 		nw, err := config.Load(cfgPath)
 		if err != nil {
 			log.Printf("reload skipped, invalid config: %v", err)
@@ -127,11 +133,25 @@ func main() {
 			return
 		}
 		log.Printf("reconciling to %d streams", len(specs))
-		sup.Reconcile(specs)
+		if restartID == nil {
+			sup.Reconcile(specs)
+			return
+		}
+		sup.ReconcileAndRestart(specs, restartID)
+	}
+	reload := func() { reconcileFromConfig(nil) }
+	// restartAll re-reads config.json and mediamtx.yml and restarts mediamtx and
+	// every engine and preview, so changes the file watch cannot see (such as an
+	// edited mediamtx.yml) apply without a reboot.
+	restartAll := func() {
+		log.Printf("restart requested: restarting mediamtx and all engines")
+		reconcileFromConfig(func(id string) bool { return id != configServerID })
 	}
 	go configwatch.Watch(ctx, cfgPath, reconcileInterval, reload)
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
+	restart := make(chan os.Signal, 1)
+	signal.Notify(restart, syscall.SIGUSR1)
 	go func() {
 		for {
 			select {
@@ -139,6 +159,8 @@ func main() {
 				return
 			case <-hup:
 				reload()
+			case <-restart:
+				restartAll()
 			}
 		}
 	}()
@@ -210,14 +232,17 @@ func buildSpecs(w config.Watcher, opts configgen.Options, engineBin, extDir, cfg
 	}
 
 	// Always-on on-player zone dashboard (config-server) on :20300. It serves the
-	// zone-drawing page and edits the SAME config.json the watcher discovered, so a
-	// Save hot-reloads through configwatch -- no restart. Its fingerprint is only
-	// the bin+config path, so reconciling streams never needlessly restarts it.
-	cfgSum := sha256.Sum256([]byte("config-server|" + cfgPath))
+	// zone-drawing page and edits the SAME config.json the watcher discovered; a
+	// Save signals this watcher (SIGHUP) to reload, and the dashboard's Restart
+	// signals it (SIGUSR1), so it is handed our pid. Its fingerprint is only the
+	// bin+config path (not the pid), so reconciling streams never needlessly
+	// restarts it; it lives and dies with this watcher, which keeps the pid valid.
+	cfgSum := sha256.Sum256([]byte(configServerID + "|" + cfgPath))
 	specs = append(specs, supervisor.Spec{
-		ID:          "config-server",
-		Bin:         filepath.Join(extDir, "config-server"),
-		Args:        []string{"--port", "20300", "--config", cfgPath},
+		ID:  configServerID,
+		Bin: filepath.Join(extDir, "config-server"),
+		Args: []string{"--port", "20300", "--config", cfgPath,
+			"--watcher-pid", strconv.Itoa(os.Getpid())},
 		Fingerprint: hex.EncodeToString(cfgSum[:]),
 	})
 	return specs, nil

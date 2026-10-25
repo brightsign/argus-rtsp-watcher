@@ -18,7 +18,7 @@ public:
     int         max_files = 5;                        // engine.log.1 .. .5
     LogLevel    min_level = LogLevel::Info;           // default threshold
     bool        also_stderr = true;                   // mirror to stderr
-    bool        utc_time = false;                     // localtime by default
+    bool        utc_time = false;                     // localtime by default (the engine sets true; lines then end the time with Z)
   };
 
   FileRotatingLogger() noexcept;                        // uses default Config{}

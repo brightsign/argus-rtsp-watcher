@@ -19,6 +19,7 @@
 #include "config/publisher_config.h"
 #include "output/publisher_v2.h"
 #include "orchestration/zone.h"
+#include "orchestration/inference_worker.h"
 #include "tracking/tracker.h"
 #include "analysis/light_analyzer.h"
 
@@ -47,6 +48,7 @@ struct PipelineConfig {
   int max_frames = 0;               // Max frames to keep (0 = no limit)
   int frame_quality = 85;           // JPEG quality (1-100)
   bool enable_frame_stamp = true;   // Burn frame_seq/frame_ts stamp into decorated frames
+  bool enable_camera_time = true;   // Recover camera capture time from RTCP sender reports (RTSP only)
 
   // Face blur options (for privacy in output frames)
   output::BlurConfig blur_config;   // Blur configuration
@@ -160,21 +162,11 @@ private:
   std::atomic<int64_t> capture_wall_ns_{0};
 
   // ---- Fusion state: shared analytics result from both models ----
-  struct FusionState {
-    std::mutex m;
-
-    // Face/gaze results (from RetinaFace thread)
-    std::vector<Detection> face_dets;
-    std::vector<Landmarks> face_lms;
-    uint64_t face_seq{0};
-
-    // Object/person detections (from YOLOX thread)
-    std::vector<Detection> yolo_dets;
-    uint64_t yolo_seq{0};
-
-    // Person tracks with stable IDs
-    std::vector<TrackedBox> tracks;
-
+  // The inference workers write into the FusionResults part. It is a base class,
+  // not a parallel copy of its fields, so the worker and the orchestrator can
+  // never disagree about layout (they previously shared memory through a
+  // reinterpret_cast, which silently breaks the moment one struct gains a field).
+  struct FusionState : FusionResults {
     // V6.2: Frame dimensions for normalized speed
     int frame_width{640};
     int frame_height{480};

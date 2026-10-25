@@ -1,7 +1,9 @@
 #include "input/input_rtsp.h"
 #include "metrics/log_global.h"
 #include "metrics/stage_stats.h"
+#include "input/camera_time.h"
 #include <atomic>
+#include <optional>
 #include <thread>
 #include <chrono>
 #include <vector>
@@ -271,7 +273,8 @@ static std::vector<std::string> build_rtsp_pipelines(const std::string& url_in) 
 // ===============================
 class RtspNv12Helper {
 public:
-    explicit RtspNv12Helper(std::string label) : label_(std::move(label)) {}
+    RtspNv12Helper(std::string label, bool camera_time)
+        : label_(std::move(label)), camera_time_enabled_(camera_time) {}
     ~RtspNv12Helper() { close(); }
 
     bool open(const std::string& url, int first_frame_timeout_ms = 10000) {
@@ -352,6 +355,8 @@ public:
             
             LG_INFO("input_rtsp:appsink configured with max-buffers=2 (Phase 2B optimization)\n");
 
+            if (camera_time_enabled_) enable_camera_time();
+
             bus_ = gst_element_get_bus(pipeline_);
             broken_.store(false, std::memory_order_release);
             bus_running_.store(true, std::memory_order_release);
@@ -428,7 +433,9 @@ public:
         return false;
     }
 
-    bool pull_into_rgb(std::vector<uint8_t>& rgb_out, int& out_w, int& out_h) {
+    // source_wall_ns receives the camera's capture time of the pulled frame
+    // (Unix epoch ns), or 0 when it is unavailable.
+    bool pull_into_rgb(std::vector<uint8_t>& rgb_out, int& out_w, int& out_h, int64_t& source_wall_ns) {
         if (!pipeline_ || !appsink_) return false;
         if (broken_.load(std::memory_order_acquire)) return false;
 
@@ -441,6 +448,8 @@ public:
             GstBuffer* buffer = gst_sample_get_buffer(sample);
             GstCaps*   caps   = gst_sample_get_caps(sample);
             if (!buffer || !caps) { gst_sample_unref(sample); continue; }
+
+            source_wall_ns = camera_time_enabled_ ? lookup_source_time(buffer) : 0;
 
             GstVideoInfo vinfo;
             if (!gst_video_info_from_caps(&vinfo, caps)) { gst_sample_unref(sample); continue; }
@@ -533,6 +542,137 @@ public:
     }
 
 private:
+    // After this many frames with no reference time at all, say so once: the
+    // camera sends no RTCP sender reports, or something upstream strips them.
+    static constexpr uint64_t kNoReferenceWarnFrames = 100;
+
+    static int64_t wall_now_ns() {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::chrono::system_clock::now().time_since_epoch()).count();
+    }
+
+    // The reference caps GStreamer tags camera (NTP) timestamps with.
+    static GstCaps* ntp_reference_caps() {
+        static GstCaps* caps = gst_caps_new_empty_simple("timestamp/x-ntp");
+        return caps;
+    }
+
+    // Ask rtspsrc to attach each RTP buffer's camera reference time (derived
+    // from the camera's RTCP sender reports) and watch its video pad to
+    // remember that time by PTS. The decoder between here and the sink need not
+    // copy the meta, but it does preserve PTS, so the sink looks the time up
+    // by PTS instead. An rtspsrc without the property just yields no time.
+    void enable_camera_time() {
+        reference_times_.clear();
+        rtp_with_reference_.store(0, std::memory_order_relaxed);
+        rtp_without_reference_.store(0, std::memory_order_relaxed);
+        frames_seen_ = 0;
+        frames_with_source_ = 0;
+        warned_missing_ = false;
+        warned_implausible_ = false;
+
+        GstElement* rtspsrc = gst_bin_get_by_name(GST_BIN(pipeline_), "src");
+        if (!rtspsrc) {
+            LG_WARN("input_rtsp:no rtspsrc named 'src'; camera time unavailable\n");
+            return;
+        }
+        if (!g_object_class_find_property(G_OBJECT_GET_CLASS(rtspsrc), "add-reference-timestamp-meta")) {
+            LG_WARN("input_rtsp:rtspsrc lacks add-reference-timestamp-meta (GStreamer < 1.22); camera time unavailable\n");
+        } else {
+            g_object_set(rtspsrc, "add-reference-timestamp-meta", TRUE, nullptr);
+            g_signal_connect(rtspsrc, "pad-added", G_CALLBACK(&RtspNv12Helper::on_pad_added), this);
+            LG_INFO("input_rtsp:camera time enabled (RTCP reference timestamps)\n");
+        }
+        gst_object_unref(rtspsrc);
+    }
+
+    static void on_pad_added(GstElement*, GstPad* pad, gpointer self) {
+        // Only the video stream matters; an audio track would only crowd the ring.
+        bool video = true;  // media unknown at this point: watch it anyway
+        GstCaps* caps = gst_pad_get_current_caps(pad);
+        if (!caps) caps = gst_pad_query_caps(pad, nullptr);
+        if (caps && gst_caps_get_size(caps) > 0) {
+            const gchar* media = gst_structure_get_string(gst_caps_get_structure(caps, 0), "media");
+            if (media) video = (std::string(media) == "video");
+        }
+        if (caps) gst_caps_unref(caps);
+        if (video) {
+            gst_pad_add_probe(pad,
+                              static_cast<GstPadProbeType>(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_BUFFER_LIST),
+                              &RtspNv12Helper::on_rtp_probe, self, nullptr);
+        }
+    }
+
+    static GstPadProbeReturn on_rtp_probe(GstPad*, GstPadProbeInfo* info, gpointer self) {
+        auto* helper = static_cast<RtspNv12Helper*>(self);
+        // The accessor macros cast the data pointer without checking its type,
+        // so test which kind of probe fired before using either.
+        if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) {
+            if (GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info)) helper->note_rtp_buffer(buffer);
+        } else if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER_LIST) {
+            GstBufferList* list = GST_PAD_PROBE_INFO_BUFFER_LIST(info);
+            for (guint i = 0; list && i < gst_buffer_list_length(list); ++i) {
+                helper->note_rtp_buffer(gst_buffer_list_get(list, i));
+            }
+        }
+        return GST_PAD_PROBE_OK;
+    }
+
+    // Runs on GStreamer's streaming thread for every RTP buffer.
+    void note_rtp_buffer(GstBuffer* buffer) {
+        const GstClockTime pts = GST_BUFFER_PTS(buffer);
+        if (!GST_CLOCK_TIME_IS_VALID(pts)) return;
+        const GstReferenceTimestampMeta* meta =
+            gst_buffer_get_reference_timestamp_meta(buffer, ntp_reference_caps());
+        if (!meta) {
+            rtp_without_reference_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        rtp_with_reference_.fetch_add(1, std::memory_order_relaxed);
+        reference_times_.record(static_cast<int64_t>(pts),
+                                camera_time::ntp_ns_to_unix_ns(meta->timestamp));
+    }
+
+    // The camera's capture time for a decoded frame, or 0 when unavailable.
+    // Runs on the capture thread.
+    int64_t lookup_source_time(GstBuffer* buffer) {
+        ++frames_seen_;
+        const GstClockTime pts = GST_BUFFER_PTS(buffer);
+        std::optional<int64_t> found;
+        if (GST_CLOCK_TIME_IS_VALID(pts)) found = reference_times_.lookup(static_cast<int64_t>(pts));
+
+        if (!found) {
+            if (frames_seen_ == kNoReferenceWarnFrames && frames_with_source_ == 0 && !warned_missing_) {
+                warned_missing_ = true;
+                LG_WARN("input_rtsp:no camera time after %llu frames (rtp buffers with reference=%llu, without=%llu): "
+                        "the camera sends no RTCP sender reports, a proxy strips them, or PTS does not survive decode\n",
+                        (unsigned long long)frames_seen_,
+                        (unsigned long long)rtp_with_reference_.load(std::memory_order_relaxed),
+                        (unsigned long long)rtp_without_reference_.load(std::memory_order_relaxed));
+            }
+            return 0;
+        }
+
+        const int64_t engine_now_ns = wall_now_ns();
+        if (!camera_time::is_plausible_source_time(*found, engine_now_ns)) {
+            if (!warned_implausible_) {
+                warned_implausible_ = true;
+                LG_WARN("input_rtsp:ignoring camera time: reference=%lld ns is more than %lld s from the engine clock (%lld ns); "
+                        "is the camera clock set, and is the NTP epoch conversion right?\n",
+                        (long long)*found, (long long)(camera_time::kMaxPlausibleSkewNs / camera_time::kNanosecondsPerSecond),
+                        (long long)engine_now_ns);
+            }
+            return 0;
+        }
+        if (frames_with_source_++ == 0) {
+            LG_INFO("input_rtsp:camera time active: first frame camera=%lld ms engine=%lld ms lag=%lld ms\n",
+                    (long long)(*found / camera_time::kNanosecondsPerMillisecond),
+                    (long long)(engine_now_ns / camera_time::kNanosecondsPerMillisecond),
+                    (long long)((engine_now_ns - *found) / camera_time::kNanosecondsPerMillisecond));
+        }
+        return *found;
+    }
+
     // Accumulates the NV12 -> full-resolution BGR convert cost (RGA, or the
     // OpenCV fallback) and logs one summary per window at debug level, with
     // the frame size so the cost can be read against the megapixel count.
@@ -558,6 +698,14 @@ private:
     std::vector<uint8_t> rgb_scratch_;
 
     const std::string label_;
+    const bool camera_time_enabled_;
+    camera_time::ReferenceTimeRing reference_times_;
+    std::atomic<uint64_t> rtp_with_reference_{0};     // streaming thread
+    std::atomic<uint64_t> rtp_without_reference_{0};  // streaming thread
+    uint64_t frames_seen_{0};                         // capture thread only
+    uint64_t frames_with_source_{0};
+    bool warned_missing_{false};
+    bool warned_implausible_{false};
     metrics::StageStats convert_stats_;
     int64_t convert_window_start_ns_{0};
 
@@ -584,7 +732,7 @@ struct RtspInputSource::Impl {
   int frame_h_{0};
   
   Impl(const std::string& u, const RtspOptions& o) 
-    : url(u), opts(o), rtsp_helper(new RtspNv12Helper(o.label)) {}
+    : url(u), opts(o), rtsp_helper(new RtspNv12Helper(o.label, o.camera_time)) {}
 };
 
 RtspInputSource::RtspInputSource(std::string url, RtspOptions opts)
@@ -641,7 +789,8 @@ FetchStatus RtspInputSource::tryFetch(FrameView& out) noexcept {
     return FetchStatus::Broken;
   }
 
-  if (!p_->rtsp_helper->pull_into_rgb(p_->rgb_frame_, p_->frame_w_, p_->frame_h_)) {
+  int64_t source_wall_ns = 0;
+  if (!p_->rtsp_helper->pull_into_rgb(p_->rgb_frame_, p_->frame_w_, p_->frame_h_, source_wall_ns)) {
     return FetchStatus::Timeout;
   }
 
@@ -655,7 +804,8 @@ FetchStatus RtspInputSource::tryFetch(FrameView& out) noexcept {
   out.plane1  = nullptr;
   out.pts_ns  = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count();
-  
+  out.source_wall_ns = source_wall_ns;
+
   // Frame is stored at native RTSP resolution (no downscale); orig == frame dims
   out.orig_width  = p_->frame_w_;
   out.orig_height = p_->frame_h_;

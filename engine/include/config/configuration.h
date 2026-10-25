@@ -49,6 +49,7 @@ struct AppConfig {
   int max_frames{0};                // Max frames to keep (0 = no limit)
   int frame_quality{85};            // JPEG quality (1-100)
   bool enable_frame_stamp{true};    // Burn frame_seq/frame_ts stamp into decorated frames (video<->MQTT sync)
+  bool enable_camera_time{true};    // Recover each frame's camera capture time from RTCP sender reports (RTSP only; source_ts)
 
   // Custom detection zone (optional; normalized 0..1 fractions of frame size).
   // Populated only when the config contains a "zone" object. mode selects the

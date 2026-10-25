@@ -1,5 +1,5 @@
-// Command boxstats reads a recorded MQTT analytics JSONL (from
-// record-frames.sh) and reports the range of person bounding-box areas for the
+// Command boxstats reads a recorded MQTT analytics JSONL (one message per line,
+// e.g. captured with mosquitto_sub) and reports the range of person bounding-box areas for the
 // boxes that fall inside a region -- e.g. "the fence area". Use it to pick a
 // size band for a spatial/area filter.
 //

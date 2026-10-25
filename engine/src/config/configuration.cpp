@@ -234,6 +234,9 @@ bool load_from_file(const std::string& path, AppConfig& out, bool /*strict*/, ch
     if (j.contains("enable_frame_stamp") && j["enable_frame_stamp"].is_boolean()) {
       out.enable_frame_stamp = j["enable_frame_stamp"].get<bool>();
     }
+    if (j.contains("enable_camera_time") && j["enable_camera_time"].is_boolean()) {
+      out.enable_camera_time = j["enable_camera_time"].get<bool>();
+    }
 
     // Parse face blur options
     if (j.contains("blur_faces") && j["blur_faces"].is_boolean()) {

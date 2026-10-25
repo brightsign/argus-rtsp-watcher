@@ -25,6 +25,10 @@ struct FusionResults {
     uint64_t face_seq{0};
     std::vector<Detection> yolo_dets;
     uint64_t yolo_seq{0};
+    // Times of the frame the latest YOLOX boxes were detected on (yolo_seq).
+    // Published with the boxes so a consumer can find the right video frame.
+    int64_t yolo_capture_wall_ns{0};  // engine capture time, Unix epoch ns
+    int64_t yolo_source_wall_ns{0};   // camera capture time, Unix epoch ns; 0 = unavailable
     // Person tracks with stable IDs and uniform/vest classification results
     std::vector<TrackedBox> tracks;
 };
@@ -40,7 +44,7 @@ struct WorkerConfig {
     std::string device_id;     // Camera name, tagged on timing log lines
     output::BlurConfig blur_config;  // Person blur configuration (applied before drawing boxes)
     bool flip_horizontal{false};     // Flip output frame left-right (mirror correction)
-    bool enable_frame_stamp{true};   // Burn human+machine-readable frame_seq/frame_ts stamp into output frames
+    bool enable_frame_stamp{true};   // Burn the human-readable frame_seq/time stamp into output frames
     zone::ZoneCfg zone{};            // Custom detection zone; drawn as a faint green outline when enabled
 };
 
