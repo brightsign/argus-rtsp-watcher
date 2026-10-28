@@ -17,6 +17,17 @@ struct LightCfg {
     float roi_frac{0.6f};
     int sample_stride{8};  ///< minimum stride; the analyzer may sample more sparsely at high resolution
     bool monochrome_camera{false};
+
+    /// Optional operator-drawn light-measurement region, normalized 0..1 of the
+    /// frame. When region_enabled, the analyzer measures mean luminance inside
+    /// this rectangle and decides LIGHT/DARK purely on region_dark_luma --
+    /// bypassing the central-ROI chroma/luma state machine. The operator draws
+    /// it on the config-server dashboard, the same way as a detection zone, so
+    /// a lit-but-nighttime scene reads DARK when the region covers a dark area.
+    /// EMA smoothing and min_dwell still apply so the state cannot flap.
+    bool region_enabled{false};
+    float region_x0{0.f}, region_y0{0.f}, region_x1{0.f}, region_y1{0.f};
+    float region_dark_luma{40.f};  ///< region mean luma below this => DARK
 };
 
 #endif  // LIGHT_CONFIG_H

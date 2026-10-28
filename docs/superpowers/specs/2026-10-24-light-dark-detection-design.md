@@ -360,3 +360,64 @@ Example stream entry:
   `.../light` messages and the analytics `light` fields.
 - All via the Makefile (`make build`, `make run-tests` / `make test`,
   `make check`) — never direct `go`/`cmake` invocations.
+
+---
+
+## Addendum (2026-10-28): operator-drawn light region
+
+This addendum amends §2 and §4. It **reverses two non-goals** — "No UI in the
+config-server dashboard for light settings" and "No per-region lighting" — but
+only to the narrow extent below. The automatic IR/chroma + luma detector of §4 is
+unchanged and remains the default; the region is an opt-in override.
+
+### Intent
+
+The §4 detector reports the *image*, so an outdoor scene lit by lamps at night
+reads `LIGHT`. Operators need a manual override: draw a rectangle over a part of
+the view that is genuinely dark after hours (sky, an unlit wall) and set a
+brightness threshold, so that scene reads `DARK` at night regardless of nearby
+lights.
+
+### Configuration
+
+Two optional per-stream `light` fields:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `region` | *(unset)* | `[x0,y0,x1,y1]`, normalized 0..1, the luminance-measurement rectangle. Unset = feature off (§4 detector runs). |
+| `region_threshold` | `40` | Region mean luma (0..255) at/below which the scene reads `DARK`. Adjustable per stream, like `confidence`. |
+
+Go (`internal/config`) validates `region` (four values in [0,1], `x1>x0`,
+`y1>y0`) and `region_threshold` (0..255), and `internal/configgen` renders both
+into the engine `light` object (`region` only when drawn). Defaults are owned by
+Go, mirroring the rest of the `light` block.
+
+### Dashboard
+
+The config-server "Zone Dashboard" gains, per camera: a **draw** toggle switching
+the mouse between the detection zone and the light region (drawn amber, distinct
+from the green zone), a **clear region** button, and a **dark below** slider
+(0..255) bound to `region_threshold`. Same overlay, same drag mechanic, same
+save/reload path as the zone.
+
+### Algorithm (when `region` is set — sole authority)
+
+`LightAnalyzer` measures mean luma over the drawn rectangle (same subsampled
+one-pass reduction as the central ROI, via `measure_region`), feeds it through the
+existing per-frame EMA, and decides `DARK` iff `ema_luma < region_dark_luma`, else
+`LIGHT`. `ir_mode` is always `false`; the IR/chroma rule and the
+`dark_luma`/`light_luma` dead-band are **bypassed**. `warmup_seconds` and
+`min_dwell_seconds` still apply, so the state cannot flap — `min_dwell` is the only
+anti-flap guard in region mode (there is no hysteresis dead-band). A region with
+non-increasing coordinates is dropped at construction and the analyzer falls back
+to the §4 central-ROI detector.
+
+### Sibling changes in the same commit (not part of this feature)
+
+- **Global default confidence.** A top-level `confidence` (0..1) in `config.json`;
+  any stream without its own `confidence` inherits it, and an unset global falls to
+  `0.4`. Go fills every stream's value so the engine always receives an explicit
+  number. Surfaced in the dashboard's Global settings.
+- **Person-blur removed.** The `blur_persons` output path and its
+  `blur_faces`/`blur_method`/`blur_intensity` engine config (and the `face_blur`
+  unit, now unused) were deleted.

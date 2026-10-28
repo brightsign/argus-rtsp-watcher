@@ -432,6 +432,7 @@ func TestRenderLightDefaults(t *testing.T) {
 		"dark_luma": 40.0, "light_luma": 70.0, "chroma_threshold": 10.0,
 		"ema_alpha": 0.1, "min_dwell_seconds": 5.0, "warmup_seconds": 3.0,
 		"roi_frac": 0.6, "sample_stride": 8.0, "monochrome_camera": false,
+		"region_threshold": 40.0,
 	})
 }
 
@@ -445,6 +446,7 @@ func TestRenderLightOverrides(t *testing.T) {
 		"dark_luma": 40.0, "light_luma": 70.0, "chroma_threshold": 10.0,
 		"ema_alpha": 0.1, "min_dwell_seconds": 5.0, "warmup_seconds": 3.0,
 		"roi_frac": 0.6, "sample_stride": 8.0, "monochrome_camera": false,
+		"region_threshold": 40.0,
 	})
 }
 
@@ -457,5 +459,31 @@ func TestRenderLightExplicitZeroHonored(t *testing.T) {
 		"dark_luma": 0.0, "light_luma": 70.0, "chroma_threshold": 10.0,
 		"ema_alpha": 0.1, "min_dwell_seconds": 0.0, "warmup_seconds": 0.0,
 		"roi_frac": 0.6, "sample_stride": 8.0, "monochrome_camera": false,
+		"region_threshold": 40.0,
 	})
+}
+
+func TestRenderLightRegion(t *testing.T) {
+	// A region with no explicit threshold renders the drawn rectangle and the
+	// default region_threshold; omitting the region renders no "region" key.
+	thresh := 25.0
+	light := renderLightObject(t, config.Stream{ID: "cam1", RTSPURL: "rtsp://h/live", TargetFPS: 10,
+		Light: &config.LightConfig{Region: []float64{0.1, 0.2, 0.8, 0.9}, RegionThreshold: &thresh}})
+	if light["region_threshold"] != 25.0 {
+		t.Errorf("region_threshold = %v, want 25", light["region_threshold"])
+	}
+	region, ok := light["region"].([]any)
+	if !ok || len(region) != 4 {
+		t.Fatalf("region = %v, want a 4-element array", light["region"])
+	}
+	for i, want := range []float64{0.1, 0.2, 0.8, 0.9} {
+		if region[i] != want {
+			t.Errorf("region[%d] = %v, want %v", i, region[i], want)
+		}
+	}
+
+	noRegion := renderLightObject(t, config.Stream{ID: "cam1", RTSPURL: "rtsp://h/live", TargetFPS: 10})
+	if _, present := noRegion["region"]; present {
+		t.Errorf("region key should be absent when no region is drawn")
+	}
 }

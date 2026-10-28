@@ -347,13 +347,6 @@ int main(int argc, char** argv) {
     pc.zone.y1 = appcfg.zone.y1;
     pc.light = appcfg.light;
 
-    // Configure face/person blur for privacy in output frames
-    pc.blur_config.enabled = appcfg.blur_faces;
-    pc.blur_config.intensity = appcfg.blur_intensity;
-    pc.blur_config.method = (appcfg.blur_method == "gaussian")
-        ? output::BlurMethod::GAUSSIAN
-        : output::BlurMethod::PIXELATE;
-
     // Horizontal flip (mirror correction for front-facing cameras)
     pc.flip_horizontal = appcfg.flip_horizontal;
     LG_INFO("Horizontal flip: %s", pc.flip_horizontal ? "enabled" : "disabled");

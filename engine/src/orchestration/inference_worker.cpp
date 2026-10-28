@@ -403,7 +403,7 @@ void run_inference_loop(
 
             visualization::process_inference_results(runner, vis_canvas, debug_frame_idx,
                                                      sf->orig_width, sf->orig_height, second_runner,
-                                                     fusion_output, config.blur_config,
+                                                     fusion_output,
                                                      config.flip_horizontal, config.zone,
                                                      config.draw_score_threshold);
             const int64_t overlay_end_ns = metrics::steady_now_ns();
@@ -419,7 +419,7 @@ void run_inference_loop(
                 result.frame_width = sf->orig_width;    // Original camera dimensions for letterbox crop
                 result.frame_height = sf->orig_height;
 
-                // Populate face tracks for blur processing
+                // Populate face tracks (boxes + landmarks) into the result for output/analytics.
                 // Transform coordinates: RetinaFace model space (320x320) -> canvas space (dst_w x dst_h)
                 if (fusion_output && sf->orig_width > 0 && sf->orig_height > 0) {
                     std::lock_guard<std::mutex> g(fusion_output->m);
@@ -460,7 +460,7 @@ void run_inference_loop(
                         }
                     }
 
-                    // Populate person tracks from YOLOX detections for person blur.
+                    // Populate person tracks from YOLOX detections into the result.
                     // yolo_dets are already in camera space (de-letterboxed by the
                     // YOLOX runner), so only the camera -> canvas letterbox mapping
                     // is applied here.

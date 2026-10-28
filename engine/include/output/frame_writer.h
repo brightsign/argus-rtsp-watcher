@@ -4,7 +4,6 @@
 #include <memory>
 #include <string>
 #include <opencv2/core.hpp>
-#include "output/face_blur.h"
 
 // Forward declarations
 struct PipelineResult;
@@ -44,14 +43,12 @@ public:
 // output_dir: directory to save the frame into (will be created if needed)
 // max_frames: unused (kept for ABI/API compatibility with the async variant)
 // quality: JPEG quality (0-100)
-// blur_config: optional face blur configuration for privacy
 // stride: save one frame in every `stride` processed frames (1 = every frame);
 //         must be >= 1
 std::unique_ptr<IFrameWriter> make_frame_writer_disk(
     const std::string& output_dir,
     int max_frames = 0,
     int quality = 85,
-    const output::BlurConfig& blur_config = output::BlurConfig{},
     int stride = 1) noexcept;
 
 // Create a no-op frame writer (useful for disabling frame output)
@@ -63,14 +60,12 @@ std::unique_ptr<IFrameWriter> make_frame_writer_null() noexcept;
 // output_dir: directory to save the frame into (will be created if needed)
 // max_frames: unused (kept for ABI/API compatibility)
 // quality: JPEG quality (0-100)
-// blur_config: optional face blur configuration for privacy
 // queue_size: background queue depth (power of 2, default 8)
 // stride: save one frame in every `stride` processed frames (1 = every frame)
 std::unique_ptr<IFrameWriter> make_frame_writer_disk_async(
     const std::string& output_dir,
     int max_frames = 0,
     int quality = 85,
-    const output::BlurConfig& blur_config = output::BlurConfig{},
     size_t queue_size = 8,
     int stride = 1) noexcept;
 

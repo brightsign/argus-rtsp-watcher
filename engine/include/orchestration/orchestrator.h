@@ -53,9 +53,6 @@ struct PipelineConfig {
   bool enable_frame_stamp = true;   // Burn frame_seq/frame_ts stamp into decorated frames
   bool enable_camera_time = true;   // Recover camera capture time from RTCP sender reports (RTSP only)
 
-  // Face blur options (for privacy in output frames)
-  output::BlurConfig blur_config;   // Blur configuration
-
   // Flip output frame horizontally (mirror correction for front-facing cameras)
   bool flip_horizontal{false};
 

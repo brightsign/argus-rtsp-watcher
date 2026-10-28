@@ -23,12 +23,11 @@ struct Measurement {
     float chroma;
 };
 
-Measurement measure(const SharedFrame& sf, float roi_frac, int minimum_stride) {
-    const int roi_width = std::max(1, static_cast<int>(sf.width * roi_frac));
-    const int roi_height = std::max(1, static_cast<int>(sf.height * roi_frac));
-    const int roi_left = (sf.width - roi_width) / 2;
-    const int roi_top = (sf.height - roi_height) / 2;
-
+// Measure mean luma and chroma over an explicit pixel rectangle of the frame,
+// subsampling to roughly kTargetSampleCount pixels. The rectangle must already
+// be clamped inside the frame and non-empty.
+Measurement measure_bounds(const SharedFrame& sf, int roi_left, int roi_top,
+                           int roi_width, int roi_height, int minimum_stride) {
     const double roi_pixels = static_cast<double>(roi_width) * roi_height;
     const int derived_stride = static_cast<int>(std::lround(std::sqrt(roi_pixels / kTargetSampleCount)));
     const int stride = std::max(minimum_stride, std::max(1, derived_stride));
@@ -58,6 +57,25 @@ Measurement measure(const SharedFrame& sf, float roi_frac, int minimum_stride) {
             static_cast<float>(static_cast<double>(chroma_sum) / count)};
 }
 
+// Measure the central ROI covering roi_frac of each dimension.
+Measurement measure(const SharedFrame& sf, float roi_frac, int minimum_stride) {
+    const int roi_width = std::max(1, static_cast<int>(sf.width * roi_frac));
+    const int roi_height = std::max(1, static_cast<int>(sf.height * roi_frac));
+    const int roi_left = (sf.width - roi_width) / 2;
+    const int roi_top = (sf.height - roi_height) / 2;
+    return measure_bounds(sf, roi_left, roi_top, roi_width, roi_height, minimum_stride);
+}
+
+// Measure a normalized 0..1 region of the frame, clamped to the frame bounds.
+Measurement measure_region(const SharedFrame& sf, float x0, float y0, float x1,
+                           float y1, int minimum_stride) {
+    const int left = std::clamp(static_cast<int>(std::lround(x0 * sf.width)), 0, sf.width - 1);
+    const int top = std::clamp(static_cast<int>(std::lround(y0 * sf.height)), 0, sf.height - 1);
+    const int right = std::clamp(static_cast<int>(std::lround(x1 * sf.width)), left + 1, sf.width);
+    const int bottom = std::clamp(static_cast<int>(std::lround(y1 * sf.height)), top + 1, sf.height);
+    return measure_bounds(sf, left, top, right - left, bottom - top, minimum_stride);
+}
+
 }  // namespace
 
 LightAnalyzer::LightAnalyzer(LightCfg cfg) noexcept : cfg_(cfg) {
@@ -71,6 +89,15 @@ LightAnalyzer::LightAnalyzer(LightCfg cfg) noexcept : cfg_(cfg) {
     if (!(cfg_.ema_alpha > 0.f && cfg_.ema_alpha <= 1.f)) {
         cfg_.ema_alpha = LightCfg{}.ema_alpha;
     }
+    // A region with non-increasing or non-finite coordinates is unusable; drop
+    // back to the central-ROI detector rather than sampling an empty rectangle.
+    if (cfg_.region_enabled &&
+        !(cfg_.region_x1 > cfg_.region_x0 && cfg_.region_y1 > cfg_.region_y0)) {
+        cfg_.region_enabled = false;
+    }
+    if (!(cfg_.region_dark_luma >= 0.f)) {
+        cfg_.region_dark_luma = LightCfg{}.region_dark_luma;
+    }
 }
 
 void LightAnalyzer::update(const SharedFrame& sf, int64_t now_ms) noexcept {
@@ -79,7 +106,11 @@ void LightAnalyzer::update(const SharedFrame& sf, int64_t now_ms) noexcept {
         return;
     }
 
-    const Measurement sample = measure(sf, cfg_.roi_frac, cfg_.sample_stride);
+    const Measurement sample =
+        cfg_.region_enabled
+            ? measure_region(sf, cfg_.region_x0, cfg_.region_y0, cfg_.region_x1,
+                             cfg_.region_y1, cfg_.sample_stride)
+            : measure(sf, cfg_.roi_frac, cfg_.sample_stride);
 
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -102,7 +133,13 @@ void LightAnalyzer::update(const SharedFrame& sf, int64_t now_ms) noexcept {
 
     LightLevelState candidate_state = current_.state;
     bool candidate_ir_mode = false;
-    if (!cfg_.monochrome_camera && ema_chroma_ < cfg_.chroma_threshold) {
+    if (cfg_.region_enabled) {
+        // Region mode is the sole authority: mean luma in the operator's region
+        // below the threshold is DARK, otherwise LIGHT. No IR/chroma rule and no
+        // dead-band -- min_dwell (below) is the only anti-flap guard here.
+        candidate_state =
+            ema_luma_ < cfg_.region_dark_luma ? LightLevelState::Dark : LightLevelState::Light;
+    } else if (!cfg_.monochrome_camera && ema_chroma_ < cfg_.chroma_threshold) {
         candidate_state = LightLevelState::Dark;
         candidate_ir_mode = true;
     } else if (ema_luma_ <= cfg_.dark_luma) {

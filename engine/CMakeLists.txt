@@ -236,7 +236,6 @@ add_executable(argus-engine
         # Output module
         src/output/annotator.cpp
         src/output/async_publisher.cpp
-        src/output/face_blur.cpp
         src/output/frame_writer.cpp
         src/output/mqtt_broker.cpp
         src/output/mqtt_publisher.cpp

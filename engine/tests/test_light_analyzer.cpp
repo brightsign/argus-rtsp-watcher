@@ -52,6 +52,31 @@ float luma_of(uint8_t blue, uint8_t green, uint8_t red) {
     return 0.299f * red + 0.587f * green + 0.114f * blue;
 }
 
+// Overwrites the pixel rectangle [x0,x1) x [y0,y1) with a BGR colour.
+void fill_rect(SharedFrame& frame, int x0, int y0, int x1, int y1,
+               uint8_t blue, uint8_t green, uint8_t red) {
+    for (int y = y0; y < y1; ++y) {
+        for (int x = x0; x < x1; ++x) {
+            uint8_t* pixel = frame.bgr.data() + (static_cast<size_t>(y) * frame.width + x) * 3;
+            pixel[0] = blue;
+            pixel[1] = green;
+            pixel[2] = red;
+        }
+    }
+}
+
+// A fast-EMA config whose decision keys on an operator-drawn region.
+LightCfg region_cfg(float x0, float y0, float x1, float y1, float threshold) {
+    LightCfg cfg = fast_cfg();
+    cfg.region_enabled = true;
+    cfg.region_x0 = x0;
+    cfg.region_y0 = y0;
+    cfg.region_x1 = x1;
+    cfg.region_y1 = y1;
+    cfg.region_dark_luma = threshold;
+    return cfg;
+}
+
 }  // namespace
 
 TEST(LightAnalyzer, BrightColorIsLight) {
@@ -239,4 +264,59 @@ TEST(LightAnalyzer, ZeroWidthFrameIsSafe) {
     analyzer.update(frame, 0);
     analyzer.update(frame, 100 * kMillisPerSecond);
     EXPECT_EQ(analyzer.snapshot().state, LightLevelState::Unknown);
+}
+
+// A bright monochrome frame would be DARK via the IR/chroma rule, but a region
+// above its threshold overrides that: the region is the sole authority.
+TEST(LightAnalyzer, RegionBypassesIrMode) {
+    LightAnalyzer analyzer(region_cfg(0.1f, 0.1f, 0.9f, 0.9f, 40.0f));
+    const SharedFrame frame = make_bgr(kFrameWidth, kFrameHeight, 200, 200, 200);
+    feed(analyzer, frame, 0, 10);
+
+    const LightState state = analyzer.snapshot();
+    EXPECT_EQ(state.state, LightLevelState::Light);
+    EXPECT_FALSE(state.ir_mode);
+    EXPECT_GT(state.level, 0);
+}
+
+// A mid-luma colour frame sits in the central detector's dead-band (stays
+// UNKNOWN), but a region with a high threshold reads it DARK -- proving the
+// region threshold, not the dark_luma/light_luma band, governs the decision.
+TEST(LightAnalyzer, RegionThresholdIsAuthority) {
+    LightAnalyzer analyzer(region_cfg(0.1f, 0.1f, 0.9f, 0.9f, 100.0f));
+    const SharedFrame frame = make_bgr(kFrameWidth, kFrameHeight, 30, 60, 80);
+    ASSERT_GT(luma_of(30, 60, 80), 40.0f);
+    ASSERT_LT(luma_of(30, 60, 80), 70.0f);
+    feed(analyzer, frame, 0, 10);
+
+    const LightState state = analyzer.snapshot();
+    EXPECT_EQ(state.state, LightLevelState::Dark);
+    EXPECT_FALSE(state.ir_mode);
+}
+
+// The region samples only the drawn rectangle: a dark patch under the region
+// reads DARK, while a region over the bright remainder reads LIGHT.
+TEST(LightAnalyzer, RegionSamplesOnlyItsRectangle) {
+    SharedFrame frame = make_bgr(kFrameWidth, kFrameHeight, 60, 160, 200);
+    fill_rect(frame, 0, 0, kFrameWidth / 2, kFrameHeight / 2, 5, 5, 5);  // dark top-left quadrant
+
+    LightAnalyzer over_dark(region_cfg(0.0f, 0.0f, 0.5f, 0.5f, 40.0f));
+    feed(over_dark, frame, 0, 10);
+    EXPECT_EQ(over_dark.snapshot().state, LightLevelState::Dark);
+
+    LightAnalyzer over_bright(region_cfg(0.5f, 0.5f, 1.0f, 1.0f, 40.0f));
+    feed(over_bright, frame, 0, 10);
+    EXPECT_EQ(over_bright.snapshot().state, LightLevelState::Light);
+}
+
+// A region with non-increasing coordinates is dropped; the analyzer falls back
+// to the central-ROI IR/chroma detector.
+TEST(LightAnalyzer, DegenerateRegionFallsBackToCentral) {
+    LightAnalyzer analyzer(region_cfg(0.5f, 0.1f, 0.5f, 0.9f, 40.0f));
+    const SharedFrame frame = make_bgr(kFrameWidth, kFrameHeight, 200, 200, 200);
+    feed(analyzer, frame, 0, 10);
+
+    const LightState state = analyzer.snapshot();
+    EXPECT_EQ(state.state, LightLevelState::Dark);
+    EXPECT_TRUE(state.ir_mode);
 }

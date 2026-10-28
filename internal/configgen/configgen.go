@@ -197,7 +197,7 @@ func renderLight(l *config.LightConfig) map[string]any {
 	if l.OnChange != nil {
 		onChange = *l.OnChange
 	}
-	return map[string]any{
+	out := map[string]any{
 		"enabled":           enabled,
 		"on_change":         onChange,
 		"interval_seconds":  valueOrDefault(l.IntervalSeconds, config.DefaultLightIntervalSeconds),
@@ -210,7 +210,14 @@ func renderLight(l *config.LightConfig) map[string]any {
 		"roi_frac":          valueOrDefault(l.ROIFrac, config.DefaultLightROIFrac),
 		"sample_stride":     valueOrDefault(l.SampleStride, config.DefaultLightSampleStride),
 		"monochrome_camera": l.MonochromeCamera,
+		"region_threshold":  valueOrDefault(l.RegionThreshold, float64(config.DefaultLightRegionThreshold)),
 	}
+	// Only a drawn region switches the engine to region-luminance mode; absent,
+	// the engine keeps its central-ROI chroma/luma detector.
+	if len(l.Region) == 4 {
+		out["region"] = []any{l.Region[0], l.Region[1], l.Region[2], l.Region[3]}
+	}
+	return out
 }
 
 func valueOrDefault[T int | float64](value *T, fallback T) T {

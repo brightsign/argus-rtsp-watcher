@@ -1,5 +1,4 @@
 #include "output/frame_writer.h"
-#include "output/face_blur.h"
 #include "output/frame_stride.h"
 #include "pipeline/pipeline_types.h"
 #include "orchestration/letterbox.h"
@@ -54,18 +53,13 @@ public:
 class DiskFrameWriter final : public IFrameWriter {
 public:
   DiskFrameWriter(const std::string& output_dir, int max_frames, int quality,
-                  const output::BlurConfig& blur_config, int stride) noexcept
+                  int stride) noexcept
     : output_dir_(output_dir), max_frames_(max_frames), quality_(quality),
-      blur_config_(blur_config), stride_(stride), frame_stride_(stride),
+      stride_(stride), frame_stride_(stride),
       writes_count_(0), last_log_time_(std::chrono::steady_clock::now()) {
     try {
       fs::create_directories(output_dir_);
       LG_INFO("frame_writer: created output directory %s", output_dir_.c_str());
-      if (blur_config_.enabled) {
-        LG_INFO("frame_writer: person blur enabled (method=%s, intensity=%d)",
-                blur_config_.method == output::BlurMethod::PIXELATE ? "pixelate" : "gaussian",
-                blur_config_.intensity);
-      }
     } catch (const std::exception& e) {
       LG_ERROR("frame_writer: failed to create output directory: %s", e.what());
     }
@@ -89,9 +83,7 @@ public:
       // of which directory this writer was configured for.
       const std::string filepath = (fs::path(output_dir_) / "output.jpg").string();
 
-      // V7.2: Blur is now applied in visualization.cpp before drawing bounding boxes
-      // This ensures blur stays inside box area and boxes are drawn on top
-      cv::Mat output_img = img;  // No copy needed - blur already applied if enabled
+      cv::Mat output_img = img;  // No copy needed
 
       // Crop letterbox (remove black bars) if original dimensions are available
       if (result.frame_width > 0 && result.frame_height > 0 &&
@@ -151,7 +143,6 @@ private:
   std::string output_dir_;
   int max_frames_;
   int quality_;
-  output::BlurConfig blur_config_;
   int stride_;
   output::FrameStride frame_stride_;
   int writes_count_;
@@ -163,7 +154,7 @@ private:
 class AsyncDiskFrameWriter final : public IFrameWriter {
 public:
   struct FrameData {
-    cv::Mat image;           // Preprocessed image (cloned, blurred, cropped)
+    cv::Mat image;           // Preprocessed image (cloned, cropped)
     std::string filepath;    // Target output path
     uint64_t seq;           // Frame sequence number
     int quality;            // JPEG quality
@@ -173,9 +164,9 @@ public:
   };
   
   AsyncDiskFrameWriter(const std::string& output_dir, int max_frames, int quality,
-                       const output::BlurConfig& blur_config, size_t queue_size, int stride) noexcept
+                       size_t queue_size, int stride) noexcept
     : output_dir_(output_dir), max_frames_(max_frames), quality_(quality),
-      blur_config_(blur_config), frame_stride_(stride), 
+      frame_stride_(stride),
       running_(false), dropped_frames_(0), total_enqueued_(0) {
     
     // Validate queue size is power of 2
@@ -187,11 +178,6 @@ public:
     try {
       fs::create_directories(output_dir_);
       LG_INFO("frame_writer_async: created output directory %s", output_dir_.c_str());
-      if (blur_config_.enabled) {
-        LG_INFO("frame_writer_async: person blur enabled (method=%s, intensity=%d)",
-                blur_config_.method == output::BlurMethod::PIXELATE ? "pixelate" : "gaussian",
-                blur_config_.intensity);
-      }
       LG_INFO("frame_writer_async: queue size=%zu (async mode enabled)", queue_size);
       
       // Start background thread
@@ -235,14 +221,12 @@ public:
     }
     
     try {
-      // Preprocess frame in main thread (minimize time in background)
-      // This includes face blur and letterbox cropping
+      // Preprocess frame in main thread (minimize time in background):
+      // letterbox cropping below.
 
       // Fixed filename per output_dir (overwrite mode) — see DiskFrameWriter.
       const std::string filepath = (fs::path(output_dir_) / "output.jpg").string();
 
-      // V7.2: Blur is now applied in visualization.cpp before drawing bounding boxes
-      // This ensures blur stays inside box area and boxes are drawn on top
       cv::Mat output_img = img.clone();  // Clone for async processing
       
       // Crop letterbox (remove black bars) if original dimensions are available
@@ -359,9 +343,8 @@ private:
   std::string output_dir_;
   int max_frames_;
   int quality_;
-  output::BlurConfig blur_config_;
   output::FrameStride frame_stride_;
-  
+
   // Async components
   SPSCQueue<FrameData, 16> queue_;  // Lock-free queue (power of 2 capacity)
   std::thread writer_thread_;
@@ -380,17 +363,15 @@ std::unique_ptr<IFrameWriter> make_frame_writer_disk(
     const std::string& output_dir,
     int max_frames,
     int quality,
-    const output::BlurConfig& blur_config,
     int stride) noexcept {
-  return std::make_unique<DiskFrameWriter>(output_dir, max_frames, quality, blur_config, stride);
+  return std::make_unique<DiskFrameWriter>(output_dir, max_frames, quality, stride);
 }
 
 std::unique_ptr<IFrameWriter> make_frame_writer_disk_async(
     const std::string& output_dir,
     int max_frames,
     int quality,
-    const output::BlurConfig& blur_config,
     size_t queue_size,
     int stride) noexcept {
-  return std::make_unique<AsyncDiskFrameWriter>(output_dir, max_frames, quality, blur_config, queue_size, stride);
+  return std::make_unique<AsyncDiskFrameWriter>(output_dir, max_frames, quality, queue_size, stride);
 }

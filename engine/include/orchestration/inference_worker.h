@@ -15,7 +15,6 @@
 #include "pipeline/pipeline_types.h"
 #include "tracking/tracker.h"
 #include "output/frame_writer.h"
-#include "output/face_blur.h"
 
 // Type alias for the fusion output structure (defined in orchestrator.h)
 struct FusionResults {
@@ -43,7 +42,6 @@ struct WorkerConfig {
     int model_input_height;
     std::string model_name;    // For logging
     std::string device_id;     // Camera name, tagged on timing log lines
-    output::BlurConfig blur_config;  // Person blur configuration (applied before drawing boxes)
     bool flip_horizontal{false};     // Flip output frame left-right (mirror correction)
     bool enable_frame_stamp{true};   // Burn the human-readable frame_seq/time stamp into output frames
     zone::ZoneCfg zone{};            // Custom detection zone; drawn as a faint green outline when enabled

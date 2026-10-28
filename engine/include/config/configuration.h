@@ -67,11 +67,6 @@ struct AppConfig {
   // defaults live in exactly one C++ place; JSON "light" keys override them.
   LightCfg light;
 
-  // Face blur options (for privacy in output frames)
-  bool blur_faces{false};              // Enable face blurring in output frames
-  std::string blur_method{"pixelate"}; // "pixelate" or "gaussian"
-  int blur_intensity{12};              // Block size (4-32) for pixelate, kernel size (31-99) for gaussian
-
   // Flip output frame horizontally (mirror)
   // Useful for front-facing webcams that deliver a mirrored image.
   bool flip_horizontal{false};

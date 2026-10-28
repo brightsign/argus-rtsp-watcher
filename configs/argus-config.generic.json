@@ -78,11 +78,6 @@
   "enable_camera_time": true,
   "output_dir": "/tmp",
 
-  "_comment_privacy": "Optional person/face blurring in output frames. Ignored where frame output is off.",
-  "blur_faces": false,
-  "blur_method": "gaussian",
-  "blur_intensity": 71,
-
   "_comment_flip_horizontal": "Mirror the frame horizontally (useful for front-facing USB cameras).",
   "flip_horizontal": false,
 

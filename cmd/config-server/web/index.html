@@ -40,6 +40,9 @@
   /* faces on/off toggle: left = off, right = on (reuses the .modesw slider) */
   .modesw .track.on { background: var(--accent); }
   .modesw .track.on .knob { left: 22px; }
+  /* draw-target toggle: left = zone (default), right = light region (amber) */
+  .modesw .track.light { background: #ffb300; }
+  .modesw .track.light .knob { left: 22px; }
   .colorpick { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; opacity: .85; }
   .colorpick input[type=color] { width: 28px; height: 22px; padding: 0; border: 1px solid rgba(127,127,127,.5);
                                  border-radius: 4px; background: transparent; cursor: pointer; }
@@ -59,7 +62,7 @@
 </head>
 <body>
 <h1>Argus Zone Dashboard</h1>
-<p class="sub">Draw a detection zone on each camera's live view, pick its match mode (any / base), outline color, line width, and alert-border width, set the person-detection <b>confidence</b> threshold, toggle <b>face detection</b> (gaze/attention) on or off, then Save that pane. Changes apply on the player within a few seconds (no reboot). The zone shows as a faint green outline on the video feed. <b>any</b> = any part of a person's box in the zone counts; <b>base</b> = only when their feet are in it. Turning face detection off cuts CPU/NPU load; person detection, tracking, and zones keep running. <b>Global settings</b> (log level) apply to every stream. <b>Restart services</b> re-reads <code>config.json</code> and <code>mediamtx.yml</code> and restarts mediamtx and all engines without a reboot.</p>
+<p class="sub">Draw a detection zone on each camera's live view, pick its match mode (any / base), outline color, line width, and alert-border width, set the person-detection <b>confidence</b> threshold, toggle <b>face detection</b> (gaze/attention) on or off, then Save that pane. Use the <b>draw</b> toggle to switch the mouse between drawing the detection <b>zone</b> and an optional <b>light region</b> (amber): when a light region is drawn, the camera reads <b>DARK</b> whenever the average brightness inside it falls below the <b>dark below</b> threshold, overriding the automatic day/night detector. Changes apply on the player within a few seconds (no reboot). The zone shows as a faint green outline on the video feed. <b>any</b> = any part of a person's box in the zone counts; <b>base</b> = only when their feet are in it. Turning face detection off cuts CPU/NPU load; person detection, tracking, and zones keep running. <b>Global settings</b> (log level, default confidence) apply to every stream. <b>Restart services</b> re-reads <code>config.json</code> and <code>mediamtx.yml</code> and restarts mediamtx and all engines without a reboot.</p>
 <section class="panel" id="globals">
   <h2>Global settings</h2>
   <div class="row">
@@ -73,9 +76,12 @@
         <option value="critical">critical</option>
       </select>
     </label>
+    <label class="thickpick" title="Default person-detection confidence for any stream that sets none of its own (0-1)">Default confidence
+      <input type="range" min="0.05" max="0.95" step="0.05" id="globalconf">
+      <span class="thickval" id="globalconfval"></span></label>
     <button class="primary" id="saveglobal" disabled>Save</button>
     <span class="cardstatus" id="globalstatus"></span>
-    <span class="hint"><b>warn</b> silences routine output; <b>debug</b> is very verbose but adds per-stage timing lines. A new level applies by restarting each stream's engine, so video pauses briefly.</span>
+    <span class="hint"><b>warn</b> silences routine output; <b>debug</b> is very verbose but adds per-stage timing lines. A new level applies by restarting each stream's engine, so video pauses briefly. <b>Default confidence</b> applies to streams whose own confidence slider you leave untouched.</span>
   </div>
 </section>
 
@@ -98,6 +104,8 @@
   var logLevelEl = document.getElementById("loglevel");
   var saveGlobalBtn = document.getElementById("saveglobal");
   var globalStatusEl = document.getElementById("globalstatus");
+  var globalConfEl = document.getElementById("globalconf");
+  var globalConfValEl = document.getElementById("globalconfval");
   var restartBtn = document.getElementById("restart");
   var LOG_LEVELS = ["debug", "info", "warn", "error", "critical"];
   var RESTART_COOLDOWN_MS = 10000;  // services take a few seconds to return; block rapid re-clicks
@@ -115,11 +123,15 @@
   // zoneSig captures just the editable fields, so dirty tracking ignores
   // unrelated config (engine block, etc.) the dashboard never touches.
   function zoneSig(s) {
-    return JSON.stringify([s.zone || null, s.zone_mode, s.zone_color, s.zone_thickness, s.zone_border_thickness, s.zone_window_minutes, s.confidence, s.detect_faces]);
+    var lr = s.light && Array.isArray(s.light.region) ? s.light.region : null;
+    var lt = s.light && s.light.region_threshold != null ? s.light.region_threshold : null;
+    return JSON.stringify([s.zone || null, s.zone_mode, s.zone_color, s.zone_thickness, s.zone_border_thickness, s.zone_window_minutes, s.confidence, s.detect_faces, lr, lt]);
   }
-  // globalSig is the dashboard-editable global state; "" means log_level is absent.
+  // globalSig is the dashboard-editable global state: log level ("" = absent) and
+  // the global default confidence (null = absent).
   function globalSig() {
-    return cfg && cfg.log_level ? cfg.log_level : "";
+    return JSON.stringify([cfg && cfg.log_level ? cfg.log_level : "",
+                           cfg && cfg.confidence != null ? cfg.confidence : null]);
   }
   function snapshotBaseline() {
     baseline = Array.isArray(cfg && cfg.streams) ? cfg.streams.map(zoneSig) : [];
@@ -200,6 +212,15 @@
       'faces <span class="lbl lfoff">off</span>' +
       '<span class="track facetrack"><span class="knob"></span></span>' +
       '<span class="lbl lfon">on</span></span>' +
+      '<span class="modesw drawsw" title="What the mouse draws on this camera: the detection zone or the light-measurement region.">' +
+      'draw <span class="lbl ldzone">zone</span>' +
+      '<span class="track drawtrack"><span class="knob"></span></span>' +
+      '<span class="lbl ldlight">light</span></span>' +
+      'light region: <code class="regionval"></code>' +
+      '<button class="clearregion">clear region</button>' +
+      '<label class="thickpick" title="The light region reads DARK when its average brightness (0-255) is below this">' +
+      'dark below <input type="range" min="0" max="255" step="1" class="lumthresh">' +
+      '<span class="lumval"></span></label>' +
       '<button class="primary savecard">Save</button>' +
       '<span class="cardstatus"></span></div>';
 
@@ -252,8 +273,13 @@
 
     var confEl = card.querySelector(".conf");
     var confValEl = card.querySelector(".confval");
-    confEl.value = cfg.streams[idx].confidence;
-    confValEl.textContent = (+cfg.streams[idx].confidence).toFixed(2);
+    // A stream with no confidence of its own inherits the global default (else
+    // 0.4); show that effective value but only write a per-stream confidence
+    // when the operator actually moves the slider, so inheritance is preserved.
+    var effConf = cfg.streams[idx].confidence != null ? cfg.streams[idx].confidence
+                : (cfg.confidence != null ? cfg.confidence : 0.4);
+    confEl.value = effConf;
+    confValEl.textContent = (+effConf).toFixed(2);
     confEl.addEventListener("input", function () {
       cfg.streams[idx].confidence = +confEl.value;
       confValEl.textContent = (+confEl.value).toFixed(2);
@@ -289,6 +315,57 @@
     });
     syncMode();
 
+    // ensureLight returns the stream's light object, creating it if absent so the
+    // region fields have somewhere to live.
+    function ensureLight() {
+      if (!cfg.streams[idx].light || typeof cfg.streams[idx].light !== "object") {
+        cfg.streams[idx].light = {};
+      }
+      return cfg.streams[idx].light;
+    }
+    function curRegion() {
+      var l = cfg.streams[idx].light;
+      return l && Array.isArray(l.region) && l.region.length === 4 ? l.region : null;
+    }
+
+    // Draw-target toggle: left = zone (default), right = light region.
+    var drawTarget = "zone";
+    var drawTrack = card.querySelector(".drawtrack");
+    var lblDrawZone = card.querySelector(".ldzone");
+    var lblDrawLight = card.querySelector(".ldlight");
+    function syncDraw() {
+      var light = drawTarget === "light";
+      drawTrack.classList.toggle("light", light);
+      lblDrawLight.classList.toggle("on", light);
+      lblDrawZone.classList.toggle("on", !light);
+    }
+    drawTrack.addEventListener("click", function () {
+      drawTarget = drawTarget === "light" ? "zone" : "light";
+      syncDraw();
+    });
+    syncDraw();
+
+    var regionEl = card.querySelector(".regionval");
+    regionEl.textContent = fmtZone(curRegion());
+    card.querySelector(".clearregion").addEventListener("click", function () {
+      if (cfg.streams[idx].light) delete cfg.streams[idx].light.region;
+      regionEl.textContent = "none";
+      redraw();
+      refreshDirty();
+    });
+
+    var lumEl = card.querySelector(".lumthresh");
+    var lumValEl = card.querySelector(".lumval");
+    var lumInit = (cfg.streams[idx].light && cfg.streams[idx].light.region_threshold != null)
+      ? cfg.streams[idx].light.region_threshold : 40;
+    lumEl.value = lumInit;
+    lumValEl.textContent = String(lumInit);
+    lumEl.addEventListener("input", function () {
+      ensureLight().region_threshold = +lumEl.value;
+      lumValEl.textContent = lumEl.value;
+      refreshDirty();
+    });
+
     var saveBtn = card.querySelector(".savecard");
     saveBtn.addEventListener("click", function () { putConfig(cardStatus, true); });
     cards.push({ idx: idx, saveBtn: saveBtn });
@@ -304,8 +381,15 @@
         ctx.strokeRect(z[0] * canvas.width, z[1] * canvas.height,
                        (z[2] - z[0]) * canvas.width, (z[3] - z[1]) * canvas.height);
       }
+      var reg = curRegion();
+      if (reg && img.clientWidth) {
+        ctx.strokeStyle = "#ffb300";  // amber, distinct from the zone outline
+        ctx.lineWidth = 2;
+        ctx.strokeRect(reg[0] * canvas.width, reg[1] * canvas.height,
+                       (reg[2] - reg[0]) * canvas.width, (reg[3] - reg[1]) * canvas.height);
+      }
       if (drag && drag.cur) {
-        ctx.strokeStyle = "var(--accent)" === "" ? "#00e5ff" : "#00e5ff";
+        ctx.strokeStyle = drawTarget === "light" ? "#ffb300" : "#00e5ff";
         ctx.lineWidth = 2;
         var x = Math.min(drag.x, drag.cur.x), y = Math.min(drag.y, drag.cur.y);
         ctx.strokeRect(x, y, Math.abs(drag.cur.x - drag.x), Math.abs(drag.cur.y - drag.y));
@@ -329,8 +413,14 @@
       var x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y);
       drag = null;
       if (x1 - x0 < 0.02 || y1 - y0 < 0.02) return; // ignore tiny drags
-      cfg.streams[idx].zone = [ +x0.toFixed(4), +y0.toFixed(4), +x1.toFixed(4), +y1.toFixed(4) ];
-      zoneEl.textContent = fmtZone(cfg.streams[idx].zone);
+      var rect = [ +x0.toFixed(4), +y0.toFixed(4), +x1.toFixed(4), +y1.toFixed(4) ];
+      if (drawTarget === "light") {
+        ensureLight().region = rect;
+        regionEl.textContent = fmtZone(rect);
+      } else {
+        cfg.streams[idx].zone = rect;
+        zoneEl.textContent = fmtZone(rect);
+      }
       redraw();
       refreshDirty();
     });
@@ -361,7 +451,10 @@
       return;
     }
     cfg.streams.forEach(function (s, i) { camsEl.appendChild(makeCard(s, i)); });
-    logLevelEl.value = globalSig();
+    logLevelEl.value = cfg && cfg.log_level ? cfg.log_level : "";
+    var gc = cfg && cfg.confidence != null ? cfg.confidence : 0.4;
+    globalConfEl.value = gc;
+    globalConfValEl.textContent = (+gc).toFixed(2);
     snapshotBaseline();
     refreshDirty();
   }
@@ -378,6 +471,13 @@
         if (level === "warning") level = "warn";
         if (LOG_LEVELS.indexOf(level) >= 0) cfg.log_level = level;
         else delete cfg.log_level;
+        // Normalize the global default confidence; drop it if absent/invalid so
+        // the engine's own default stands.
+        if (cfg.confidence != null) {
+          var gc = parseFloat(cfg.confidence);
+          if (isFinite(gc) && gc >= 0 && gc <= 1) cfg.confidence = gc;
+          else delete cfg.confidence;
+        }
         // Normalize the per-stream zone mode so the toggle and Save round-trip it
         // even when the file on the player predates the field (default: any).
         if (Array.isArray(cfg.streams)) {
@@ -390,8 +490,29 @@
             s.zone_border_thickness = (bt >= 1 && bt <= 100) ? bt : 20;
             var wm = parseInt(s.zone_window_minutes, 10);
             s.zone_window_minutes = (wm >= 1 && wm <= 1440) ? wm : 15;
-            var c = parseFloat(s.confidence);
-            s.confidence = (isFinite(c) && c >= 0 && c <= 1) ? c : 0.5;
+            // Leave an absent per-stream confidence unset so it inherits the
+            // global default; only sanitize a present value (drop if invalid).
+            if (s.confidence != null) {
+              var c = parseFloat(s.confidence);
+              if (isFinite(c) && c >= 0 && c <= 1) s.confidence = c;
+              else delete s.confidence;
+            }
+            // Sanitize an operator-drawn light region and its threshold; an
+            // invalid region is dropped so the automatic detector stays in use.
+            if (s.light && typeof s.light === "object") {
+              if (Array.isArray(s.light.region) && s.light.region.length === 4 &&
+                  s.light.region.every(function (v) { return isFinite(v) && v >= 0 && v <= 1; }) &&
+                  s.light.region[2] > s.light.region[0] && s.light.region[3] > s.light.region[1]) {
+                s.light.region = s.light.region.map(function (v) { return +(+v).toFixed(4); });
+              } else {
+                delete s.light.region;
+              }
+              if (s.light.region_threshold != null) {
+                var rt = parseFloat(s.light.region_threshold);
+                if (isFinite(rt) && rt >= 0 && rt <= 255) s.light.region_threshold = rt;
+                else delete s.light.region_threshold;
+              }
+            }
             s.detect_faces = s.detect_faces !== false;
           });
         }
@@ -449,6 +570,11 @@
   logLevelEl.addEventListener("change", function () {
     if (logLevelEl.value === "") delete cfg.log_level;
     else cfg.log_level = logLevelEl.value;
+    refreshDirty();
+  });
+  globalConfEl.addEventListener("input", function () {
+    cfg.confidence = +globalConfEl.value;
+    globalConfValEl.textContent = (+globalConfEl.value).toFixed(2);
     refreshDirty();
   });
   saveGlobalBtn.addEventListener("click", function () { putConfig(globalStatusEl, true); });
