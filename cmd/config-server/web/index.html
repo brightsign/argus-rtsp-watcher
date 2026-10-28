@@ -218,9 +218,8 @@
       '<span class="lbl ldlight">light</span></span>' +
       'light region: <code class="regionval"></code>' +
       '<button class="clearregion">clear region</button>' +
-      '<label class="thickpick" title="The light region reads DARK when its average brightness (0-255) is below this">' +
-      'dark below <input type="range" min="0" max="255" step="1" class="lumthresh">' +
-      '<span class="lumval"></span></label>' +
+      '<label class="winpick" title="The light region reads DARK when its average brightness level (0-100) is below this">' +
+      'dark below <input type="number" min="0" max="100" step="1" class="lumthresh"></label>' +
       '<button class="primary savecard">Save</button>' +
       '<span class="cardstatus"></span></div>';
 
@@ -355,14 +354,11 @@
     });
 
     var lumEl = card.querySelector(".lumthresh");
-    var lumValEl = card.querySelector(".lumval");
-    var lumInit = (cfg.streams[idx].light && cfg.streams[idx].light.region_threshold != null)
-      ? cfg.streams[idx].light.region_threshold : 40;
-    lumEl.value = lumInit;
-    lumValEl.textContent = String(lumInit);
+    lumEl.value = (cfg.streams[idx].light && cfg.streams[idx].light.region_threshold != null)
+      ? cfg.streams[idx].light.region_threshold : 20;
     lumEl.addEventListener("input", function () {
-      ensureLight().region_threshold = +lumEl.value;
-      lumValEl.textContent = lumEl.value;
+      var v = parseInt(lumEl.value, 10);
+      ensureLight().region_threshold = (v >= 0 && v <= 100) ? v : 20;
       refreshDirty();
     });
 
@@ -509,7 +505,7 @@
               }
               if (s.light.region_threshold != null) {
                 var rt = parseFloat(s.light.region_threshold);
-                if (isFinite(rt) && rt >= 0 && rt <= 255) s.light.region_threshold = rt;
+                if (isFinite(rt) && rt >= 0 && rt <= 100) s.light.region_threshold = rt;
                 else delete s.light.region_threshold;
               }
             }

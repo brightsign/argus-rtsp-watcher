@@ -432,7 +432,7 @@ func TestRenderLightDefaults(t *testing.T) {
 		"dark_luma": 40.0, "light_luma": 70.0, "chroma_threshold": 10.0,
 		"ema_alpha": 0.1, "min_dwell_seconds": 5.0, "warmup_seconds": 3.0,
 		"roi_frac": 0.6, "sample_stride": 8.0, "monochrome_camera": false,
-		"region_threshold": 40.0,
+		"region_threshold": 20.0,
 	})
 }
 
@@ -446,7 +446,7 @@ func TestRenderLightOverrides(t *testing.T) {
 		"dark_luma": 40.0, "light_luma": 70.0, "chroma_threshold": 10.0,
 		"ema_alpha": 0.1, "min_dwell_seconds": 5.0, "warmup_seconds": 3.0,
 		"roi_frac": 0.6, "sample_stride": 8.0, "monochrome_camera": false,
-		"region_threshold": 40.0,
+		"region_threshold": 20.0,
 	})
 }
 
@@ -459,7 +459,7 @@ func TestRenderLightExplicitZeroHonored(t *testing.T) {
 		"dark_luma": 0.0, "light_luma": 70.0, "chroma_threshold": 10.0,
 		"ema_alpha": 0.1, "min_dwell_seconds": 0.0, "warmup_seconds": 0.0,
 		"roi_frac": 0.6, "sample_stride": 8.0, "monochrome_camera": false,
-		"region_threshold": 40.0,
+		"region_threshold": 20.0,
 	})
 }
 

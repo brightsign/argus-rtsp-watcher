@@ -95,9 +95,10 @@ LightAnalyzer::LightAnalyzer(LightCfg cfg) noexcept : cfg_(cfg) {
         !(cfg_.region_x1 > cfg_.region_x0 && cfg_.region_y1 > cfg_.region_y0)) {
         cfg_.region_enabled = false;
     }
-    if (!(cfg_.region_dark_luma >= 0.f)) {
-        cfg_.region_dark_luma = LightCfg{}.region_dark_luma;
+    if (!(cfg_.region_dark_level >= 0.f)) {
+        cfg_.region_dark_level = LightCfg{}.region_dark_level;
     }
+    cfg_.region_dark_level = std::min(cfg_.region_dark_level, 100.f);
 }
 
 void LightAnalyzer::update(const SharedFrame& sf, int64_t now_ms) noexcept {
@@ -134,11 +135,13 @@ void LightAnalyzer::update(const SharedFrame& sf, int64_t now_ms) noexcept {
     LightLevelState candidate_state = current_.state;
     bool candidate_ir_mode = false;
     if (cfg_.region_enabled) {
-        // Region mode is the sole authority: mean luma in the operator's region
-        // below the threshold is DARK, otherwise LIGHT. No IR/chroma rule and no
+        // Region mode is the sole authority: the mean brightness level (0..100,
+        // the same scale as the published level) in the operator's region below
+        // the threshold is DARK, otherwise LIGHT. No IR/chroma rule and no
         // dead-band -- min_dwell (below) is the only anti-flap guard here.
+        const float region_level = kMaxLevel * ema_luma_ / kMaxChannelValue;
         candidate_state =
-            ema_luma_ < cfg_.region_dark_luma ? LightLevelState::Dark : LightLevelState::Light;
+            region_level < cfg_.region_dark_level ? LightLevelState::Dark : LightLevelState::Light;
     } else if (!cfg_.monochrome_camera && ema_chroma_ < cfg_.chroma_threshold) {
         candidate_state = LightLevelState::Dark;
         candidate_ir_mode = true;

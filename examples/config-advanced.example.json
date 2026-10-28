@@ -13,7 +13,7 @@
       "zone_border_thickness": 2,
       "light": {
         "region": [0.05, 0.00, 0.60, 0.25],
-        "region_threshold": 40
+        "region_threshold": 20
       }
     },
     {

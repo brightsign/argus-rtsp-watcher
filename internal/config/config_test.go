@@ -536,7 +536,7 @@ func TestLightRegionValidation(t *testing.T) {
 	valid := []LightConfig{
 		{Region: region(0.1, 0.1, 0.9, 0.9)},
 		{Region: region(0, 0, 1, 1), RegionThreshold: floatPtr(0)},
-		{Region: region(0.2, 0.2, 0.5, 0.5), RegionThreshold: floatPtr(255)},
+		{Region: region(0.2, 0.2, 0.5, 0.5), RegionThreshold: floatPtr(100)},
 		{RegionThreshold: floatPtr(40)}, // a threshold without a region is harmless
 	}
 	for i, l := range valid {
@@ -556,7 +556,7 @@ func TestLightRegionValidation(t *testing.T) {
 		{"below zero", LightConfig{Region: region(-0.1, 0, 1, 1)}},
 		{"above one", LightConfig{Region: region(0, 0, 1.2, 1)}},
 		{"threshold<0", LightConfig{RegionThreshold: floatPtr(-1)}},
-		{"threshold>255", LightConfig{RegionThreshold: floatPtr(256)}},
+		{"threshold>100", LightConfig{RegionThreshold: floatPtr(101)}},
 	}
 	for _, tc := range bad {
 		light := tc.light

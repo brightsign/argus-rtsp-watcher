@@ -65,7 +65,8 @@ void fill_rect(SharedFrame& frame, int x0, int y0, int x1, int y1,
     }
 }
 
-// A fast-EMA config whose decision keys on an operator-drawn region.
+// A fast-EMA config whose decision keys on an operator-drawn region. threshold
+// is a 0..100 brightness level, matching the published level field.
 LightCfg region_cfg(float x0, float y0, float x1, float y1, float threshold) {
     LightCfg cfg = fast_cfg();
     cfg.region_enabled = true;
@@ -73,7 +74,7 @@ LightCfg region_cfg(float x0, float y0, float x1, float y1, float threshold) {
     cfg.region_y0 = y0;
     cfg.region_x1 = x1;
     cfg.region_y1 = y1;
-    cfg.region_dark_luma = threshold;
+    cfg.region_dark_level = threshold;
     return cfg;
 }
 
@@ -269,7 +270,7 @@ TEST(LightAnalyzer, ZeroWidthFrameIsSafe) {
 // A bright monochrome frame would be DARK via the IR/chroma rule, but a region
 // above its threshold overrides that: the region is the sole authority.
 TEST(LightAnalyzer, RegionBypassesIrMode) {
-    LightAnalyzer analyzer(region_cfg(0.1f, 0.1f, 0.9f, 0.9f, 40.0f));
+    LightAnalyzer analyzer(region_cfg(0.1f, 0.1f, 0.9f, 0.9f, 20.0f));
     const SharedFrame frame = make_bgr(kFrameWidth, kFrameHeight, 200, 200, 200);
     feed(analyzer, frame, 0, 10);
 
@@ -283,7 +284,7 @@ TEST(LightAnalyzer, RegionBypassesIrMode) {
 // UNKNOWN), but a region with a high threshold reads it DARK -- proving the
 // region threshold, not the dark_luma/light_luma band, governs the decision.
 TEST(LightAnalyzer, RegionThresholdIsAuthority) {
-    LightAnalyzer analyzer(region_cfg(0.1f, 0.1f, 0.9f, 0.9f, 100.0f));
+    LightAnalyzer analyzer(region_cfg(0.1f, 0.1f, 0.9f, 0.9f, 50.0f));
     const SharedFrame frame = make_bgr(kFrameWidth, kFrameHeight, 30, 60, 80);
     ASSERT_GT(luma_of(30, 60, 80), 40.0f);
     ASSERT_LT(luma_of(30, 60, 80), 70.0f);

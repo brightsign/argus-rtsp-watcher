@@ -193,7 +193,7 @@ bool load_from_file(const std::string& path, AppConfig& out, bool /*strict*/, ch
       read_float("roi_frac", out.light.roi_frac);
       read_int("sample_stride", out.light.sample_stride);
       read_bool("monochrome_camera", out.light.monochrome_camera);
-      read_float("region_threshold", out.light.region_dark_luma);
+      read_float("region_threshold", out.light.region_dark_level);
       // An operator-drawn [x0,y0,x1,y1] region switches the analyzer to the
       // region-luminance decision (see LightCfg). The Go supervisor validates
       // the coordinates; a malformed array here simply leaves the region off.

@@ -385,7 +385,7 @@ Two optional per-stream `light` fields:
 | Field | Default | Meaning |
 |---|---|---|
 | `region` | *(unset)* | `[x0,y0,x1,y1]`, normalized 0..1, the luminance-measurement rectangle. Unset = feature off (§4 detector runs). |
-| `region_threshold` | `40` | Region mean luma (0..255) at/below which the scene reads `DARK`. Adjustable per stream, like `confidence`. |
+| `region_threshold` | `20` | Region mean brightness level (0..100, the published `level` scale) below which the scene reads `DARK`. Adjustable per stream, like `confidence`. |
 
 Go (`internal/config`) validates `region` (four values in [0,1], `x1>x0`,
 `y1>y0`) and `region_threshold` (0..255), and `internal/configgen` renders both
@@ -404,8 +404,9 @@ save/reload path as the zone.
 
 `LightAnalyzer` measures mean luma over the drawn rectangle (same subsampled
 one-pass reduction as the central ROI, via `measure_region`), feeds it through the
-existing per-frame EMA, and decides `DARK` iff `ema_luma < region_dark_luma`, else
-`LIGHT`. `ir_mode` is always `false`; the IR/chroma rule and the
+existing per-frame EMA, converts to the 0..100 brightness level (the same scale as
+the published `level`), and decides `DARK` iff that level `< region_dark_level`,
+else `LIGHT`. `ir_mode` is always `false`; the IR/chroma rule and the
 `dark_luma`/`light_luma` dead-band are **bypassed**. `warmup_seconds` and
 `min_dwell_seconds` still apply, so the state cannot flap — `min_dwell` is the only
 anti-flap guard in region mode (there is no hysteresis dead-band). A region with

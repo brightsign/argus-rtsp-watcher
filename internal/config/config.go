@@ -80,13 +80,16 @@ const (
 	DefaultLightMonochrome      = false
 	DefaultLightOnChange        = true
 
-	// DefaultLightRegionThreshold is the region mean-luma threshold (0..255)
-	// below which an operator-drawn light region reads DARK, when the stream
-	// sets a region but omits region_threshold.
-	DefaultLightRegionThreshold = 40
+	// DefaultLightRegionThreshold is the region brightness-level threshold
+	// (0..100, the published level scale) below which an operator-drawn light
+	// region reads DARK, when the stream sets a region but omits region_threshold.
+	DefaultLightRegionThreshold = 20
 
 	// MaxLightLevel bounds the 8-bit luma and chroma thresholds.
 	MaxLightLevel = 255
+
+	// MaxLightRegionThreshold bounds the region brightness-level threshold.
+	MaxLightRegionThreshold = 100
 )
 
 // DefaultConfidence is the person-detection confidence a stream gets when it
@@ -117,8 +120,9 @@ type LightConfig struct {
 	// set, the analyzer measures mean luminance inside it and reads DARK when
 	// that mean is below RegionThreshold, bypassing the IR/chroma detector.
 	Region []float64 `json:"region"`
-	// RegionThreshold is the region mean-luma threshold (0..255); nil defaults
-	// to DefaultLightRegionThreshold. Adjustable per stream like confidence.
+	// RegionThreshold is the region brightness-level threshold (0..100, the
+	// published level scale); nil defaults to DefaultLightRegionThreshold.
+	// Adjustable per stream like confidence.
 	RegionThreshold *float64 `json:"region_threshold"`
 }
 
@@ -166,8 +170,8 @@ func validateLight(streamID string, l *LightConfig) error {
 	}
 	if l.RegionThreshold != nil {
 		t := *l.RegionThreshold
-		if math.IsNaN(t) || t < 0 || t > MaxLightLevel {
-			return fmt.Errorf("stream %q light.region_threshold = %g is out of range [0,%d]", streamID, t, MaxLightLevel)
+		if math.IsNaN(t) || t < 0 || t > MaxLightRegionThreshold {
+			return fmt.Errorf("stream %q light.region_threshold = %g is out of range [0,%d]", streamID, t, MaxLightRegionThreshold)
 		}
 	}
 	if l.Region != nil {
