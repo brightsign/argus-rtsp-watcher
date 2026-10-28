@@ -43,15 +43,22 @@ const (
 	mqttRetainFlag = 0x01
 )
 
-// lightMessage mirrors the retained bs/argus/<id>/light payload.
+// lightMessage mirrors the retained bs/argus/<id>/light payload: a delivery
+// envelope with the scene measurement nested under "light".
 type lightMessage struct {
-	DeviceID string  `json:"device_id"`
-	Event    string  `json:"event"`
-	State    string  `json:"state"`
-	Level    int     `json:"level"`
-	IRMode   *bool   `json:"ir_mode"`
-	Luma     float64 `json:"luma"`
-	Chroma   float64 `json:"chroma"`
+	DeviceID string      `json:"device_id"`
+	Event    string      `json:"event"`
+	Light    *lightScene `json:"light"`
+}
+
+// lightScene is the measurement object shared by the light topic and the
+// analytics message.
+type lightScene struct {
+	State  string  `json:"state"`
+	Level  int     `json:"level"`
+	IRMode *bool   `json:"ir_mode"`
+	Luma   float64 `json:"luma"`
+	Chroma float64 `json:"chroma"`
 }
 
 type analyticsSceneLight struct {
@@ -84,10 +91,10 @@ func TestLightDetectionBrightToDark(t *testing.T) {
 		if analytics != nil {
 			analyticsSeen++
 		}
-		if light != nil {
-			switch light.State {
+		if light != nil && light.Light != nil {
+			switch light.Light.State {
 			case "LIGHT":
-				if light.IRMode == nil || *light.IRMode {
+				if light.Light.IRMode == nil || *light.Light.IRMode {
 					t.Fatalf("bright saturated colour segment must report ir_mode=false, got %+v", light)
 				}
 				sawLight = true
@@ -118,13 +125,13 @@ func TestLightDetectionIRNight(t *testing.T) {
 		if analytics != nil {
 			analyticsSeen++
 		}
-		if light != nil && light.State == "DARK" {
-			if light.IRMode == nil || !*light.IRMode {
+		if light != nil && light.Light != nil && light.Light.State == "DARK" {
+			if light.Light.IRMode == nil || !*light.Light.IRMode {
 				t.Fatalf("bright grayscale clip is DARK and must report ir_mode=true, got %+v", light)
 			}
 			sawIRDark = true
 		}
-		if light != nil && light.State == "LIGHT" {
+		if light != nil && light.Light != nil && light.Light.State == "LIGHT" {
 			t.Fatalf("bright grayscale (IR) clip must never read as LIGHT, got %+v", light)
 		}
 		return sawIRDark && analyticsSeen > 0
@@ -380,10 +387,13 @@ func (s lightSession) assertRetainedLightState(t *testing.T) {
 // UNKNOWN is a defect here (unlike the analytics scene field during warmup).
 func assertValidLightMessage(t *testing.T, light lightMessage) {
 	t.Helper()
-	if light.State != "LIGHT" && light.State != "DARK" {
-		t.Fatalf("light topic state = %q, want LIGHT or DARK: %+v", light.State, light)
+	if light.Light == nil {
+		t.Fatalf("light topic message lacks the nested light object: %+v", light)
 	}
-	if light.IRMode == nil {
+	if light.Light.State != "LIGHT" && light.Light.State != "DARK" {
+		t.Fatalf("light topic state = %q, want LIGHT or DARK: %+v", light.Light.State, light)
+	}
+	if light.Light.IRMode == nil {
 		t.Fatalf("light topic message lacks ir_mode: %+v", light)
 	}
 	if light.Event != "periodic" && light.Event != "change" {

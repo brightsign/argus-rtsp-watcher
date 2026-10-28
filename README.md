@@ -404,26 +404,33 @@ flowchart LR
 
 **Light topic.** `bs/argus/<id>/light` is published every `interval_seconds` (default 10) with `event: "periodic"`, and immediately on a state change with `event: "change"` (when `on_change` is true). It is published **retained** (`retain: true`) at **QoS 1**, unlike the analytics topic, which is not retained by default, because it is a state topic: a subscriber that connects between heartbeats gets the current state at once.
 
+The delivery envelope (`device_id`, `event`, `ts_ms`) sits at top level; the scene
+measurement is nested under `light` — the same object the analytics message carries.
+
 ```json
 {
   "device_id": "cam1",
-  "state": "DARK",
-  "level": 0,
-  "ir_mode": true,
-  "luma": 182.4,
-  "chroma": 2.1,
   "event": "periodic",
-  "ts_ms": 1746732409123
+  "ts_ms": 1746732409123,
+  "light": {
+    "state": "DARK",
+    "level": 0,
+    "ir_mode": true,
+    "luma": 182.4,
+    "chroma": 2.1
+  }
 }
 ```
 
 | Field | Meaning |
 |-------|---------|
-| `state` | `LIGHT`, `DARK`, or `UNKNOWN` (during warm-up). |
-| `level` | Real-world light, `0`..`100`. Always `0` in IR mode. |
-| `ir_mode` | `true` when the feed is a monochrome/IR night image. |
-| `luma`, `chroma` | Smoothed luminance and chroma, for tuning thresholds. |
+| `device_id` | Stream/device id. |
 | `event` | `periodic` or `change`. |
+| `ts_ms` | Publish timestamp, epoch milliseconds. |
+| `light.state` | `LIGHT`, `DARK`, or `UNKNOWN` (during warm-up). |
+| `light.level` | Real-world light, `0`..`100`. Always `0` in IR mode. |
+| `light.ir_mode` | `true` when the feed is a monochrome/IR night image. |
+| `light.luma`, `light.chroma` | Smoothed luminance and chroma, for tuning thresholds. |
 
 **Analytics message (schema `analytics/v7.1`).** When light detection is enabled the analytics message gains a scene-level `"light": {"state","level","ir_mode","luma","chroma"}` object and each track gains a `"light": "<STATE>"` field. Both are omitted when detection is disabled, so v7.0 consumers keep working.
 
