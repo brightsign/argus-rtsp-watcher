@@ -31,8 +31,9 @@ TEST(LightJson, SceneJsonShape) {
 TEST(LightJson, TopicJsonShape) {
     const LightState state = makeState(LightLevelState::Light, 73, false, 120.0f, 40.5f);
     EXPECT_EQ(
-        "{\"device_id\":\"cam-01\",\"event\":\"change\",\"state\":\"LIGHT\",\"level\":73,"
-        "\"ir_mode\":false,\"luma\":120.0,\"chroma\":40.5,\"ts_ms\":1700000000123}",
+        "{\"device_id\":\"cam-01\",\"event\":\"change\",\"ts_ms\":1700000000123,"
+        "\"light\":{\"state\":\"LIGHT\",\"level\":73,\"ir_mode\":false,"
+        "\"luma\":120.0,\"chroma\":40.5}}",
         light_topic_json("cam-01", state, "change", 1700000000123LL));
 }
 

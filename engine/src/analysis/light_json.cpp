@@ -42,14 +42,16 @@ std::string light_scene_json(const LightState& state) {
 
 std::string light_topic_json(const std::string& device_id, const LightState& state,
                              const char* event, int64_t timestamp_ms) {
+    // The scene object is identical to the one embedded in the analytics message,
+    // so the topic payload wraps that single source of truth rather than
+    // re-listing the measurement fields. device_id/event are %s arguments, never
+    // the format string, and the scene object is passed as a %s argument too.
+    const std::string scene = light_scene_json(state);
     char buffer[kJsonBufferSize];
     const int written = std::snprintf(
         buffer, sizeof(buffer),
-        "{\"device_id\":\"%s\",\"event\":\"%s\",\"state\":\"%s\",\"level\":%d,"
-        "\"ir_mode\":%s,\"luma\":%.1f,\"chroma\":%.1f,\"ts_ms\":%" PRId64 "}",
-        device_id.c_str(), event, light_state_str(state.state), state.level,
-        state.ir_mode ? "true" : "false", static_cast<double>(state.luma),
-        static_cast<double>(state.chroma), timestamp_ms);
+        "{\"device_id\":\"%s\",\"event\":\"%s\",\"ts_ms\":%" PRId64 ",\"light\":%s}",
+        device_id.c_str(), event, timestamp_ms, scene.c_str());
     return finish(written, buffer);
 }
 
