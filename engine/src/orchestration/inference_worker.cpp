@@ -404,7 +404,8 @@ void run_inference_loop(
             visualization::process_inference_results(runner, vis_canvas, debug_frame_idx,
                                                      sf->orig_width, sf->orig_height, second_runner,
                                                      fusion_output, config.blur_config,
-                                                     config.flip_horizontal, config.zone);
+                                                     config.flip_horizontal, config.zone,
+                                                     config.draw_score_threshold);
             const int64_t overlay_end_ns = metrics::steady_now_ns();
             overlay_stats.add_ns(overlay_end_ns - clone_end_ns);
 

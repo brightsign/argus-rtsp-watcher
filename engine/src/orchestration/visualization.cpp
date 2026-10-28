@@ -363,7 +363,8 @@ static void draw_yolo_detections(
     bool flip_h = false,
     FusionResults* fusion_output = nullptr,
     int orig_width = 0,
-    int orig_height = 0) noexcept
+    int orig_height = 0,
+    float min_confidence = 0.25f) noexcept
 {
     if (!yolox_runner) return;
 
@@ -417,7 +418,8 @@ static void draw_yolo_detections(
 
     int person_count = 0;
     static int debug_draw_count = 0;
-    const float min_confidence = 0.25f;  // Lower threshold to catch distant people
+    // min_confidence is passed in so the drawn boxes honor the per-stream
+    // confidence that also gates analytics, instead of a fixed floor.
 
     for (int i = 0; i < det_count; ++i) {
         const auto& det = dets[i];
@@ -587,7 +589,8 @@ void process_inference_results(
     FusionResults* fusion_output,
     const output::BlurConfig& blur_config,
     bool flip_h,
-    const zone::ZoneCfg& zone) noexcept
+    const zone::ZoneCfg& zone,
+    float draw_score_threshold) noexcept
 {
     if (!runner) return;
 
@@ -693,7 +696,7 @@ void process_inference_results(
         draw_face_detections(drawMat, retinaface_runner, scale_x, scale_y, offset_x, offset_y, fusion_output, orig_width, orig_height, flip_h);
     }
     if (yolox_runner) {
-        draw_yolo_detections(drawMat, yolox_runner, scale_x, scale_y, offset_x, offset_y, flip_h, fusion_output, orig_width, orig_height);
+        draw_yolo_detections(drawMat, yolox_runner, scale_x, scale_y, offset_x, offset_y, flip_h, fusion_output, orig_width, orig_height, draw_score_threshold);
     }
 
     // Draw blue bounding boxes for confirmed employees (vest classifier output)

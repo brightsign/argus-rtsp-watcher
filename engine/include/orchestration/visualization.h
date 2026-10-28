@@ -27,7 +27,8 @@ void process_inference_results(
     FusionResults* fusion_output = nullptr,
     const output::BlurConfig& blur_config = output::BlurConfig{},
     bool flip_h = false,
-    const zone::ZoneCfg& zone = zone::ZoneCfg{}) noexcept;
+    const zone::ZoneCfg& zone = zone::ZoneCfg{},
+    float draw_score_threshold = 0.25f) noexcept;
 
 // Save frame as JPEG every Nth frame (controlled by frame_idx % 3)
 void save_debug_jpg(

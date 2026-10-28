@@ -47,6 +47,7 @@ struct WorkerConfig {
     bool flip_horizontal{false};     // Flip output frame left-right (mirror correction)
     bool enable_frame_stamp{true};   // Burn the human-readable frame_seq/time stamp into output frames
     zone::ZoneCfg zone{};            // Custom detection zone; drawn as a faint green outline when enabled
+    float draw_score_threshold{0.25f}; // Min YOLOX score to DRAW a person box; set from the per-stream confidence so the screen matches the analytics gate
 };
 
 // Run inference loop for a single model
