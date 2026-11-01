@@ -266,6 +266,10 @@ target_link_libraries(argus-engine
   mosquitto
 )
 
+# Export dynamic symbols so the crash handler's backtrace resolves the engine's
+# own function names (not just addresses) when it dumps a stack on a fatal signal.
+target_link_options(argus-engine PRIVATE -rdynamic)
+
 # Convert TARGET_SOC to uppercase for SOC_DIR
 string(TOUPPER ${TARGET_SOC} SOC_DIR)
 

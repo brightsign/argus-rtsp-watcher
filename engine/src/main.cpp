@@ -5,6 +5,9 @@
 #include <iostream>
 #include <string>
 #include <unistd.h>
+#if defined(__GLIBC__)
+#include <execinfo.h>
+#endif
 #include <opencv2/core.hpp>
 #include <opencv2/core/ocl.hpp>
 
@@ -53,6 +56,19 @@ static void install_crash_handlers() {
   auto sig_handler = [](int s){
     LG_CRIT("FATAL: Signal %d received (segfault/abort)", s);
     std::fflush(nullptr);
+    // Dump a stack trace so the crash can be located. backtrace() and
+    // backtrace_symbols_fd() are async-signal-safe and write straight to
+    // stderr, which the watcher captures into the per-stream log; resolve the
+    // frames offline with addr2line against the -g build. Guarded because
+    // execinfo.h is a glibc extension.
+#if defined(__GLIBC__)
+    void* frames[64];
+    const int n = backtrace(frames, 64);
+    static const char hdr[] = "FATAL: backtrace (innermost frame first):\n";
+    const ssize_t written = write(STDERR_FILENO, hdr, sizeof(hdr) - 1);
+    (void)written;
+    backtrace_symbols_fd(frames, n, STDERR_FILENO);
+#endif
     std::_Exit(128 + s);
   };
   

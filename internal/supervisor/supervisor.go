@@ -6,6 +6,7 @@ package supervisor
 import (
 	"context"
 	"io"
+	"log"
 	"os"
 	"sync"
 	"syscall"
@@ -28,6 +29,13 @@ type Spec struct {
 	// watcher's own. It is not part of the process's effective configuration,
 	// so it never affects Fingerprint or causes a restart.
 	Output io.Writer
+	// LivenessFile, when non-empty, is a path the process is expected to keep
+	// rewriting (an engine's output frame). While the process runs, a watchdog
+	// SIGKILLs it if the file's mtime stops advancing for longer than the
+	// liveness timeout, so an alive-but-hung process is restarted instead of
+	// freezing forever. Like Output, it is not part of the effective
+	// configuration and never affects Fingerprint.
+	LivenessFile string
 }
 
 // Process is a running child the supervisor can wait on and signal.
@@ -70,6 +78,15 @@ type Supervisor struct {
 	backoff       Backoff
 	shutdownGrace time.Duration
 
+	// Liveness watchdog settings. A process is watched only when its Spec sets
+	// LivenessFile. now and statMtime are injected so the watchdog is testable
+	// without real clocks or files.
+	livenessTimeout      time.Duration
+	livenessStartupGrace time.Duration
+	livenessInterval     time.Duration
+	now                  func() time.Time
+	statMtime            func(string) (time.Time, bool)
+
 	// reconcileMu serializes Reconcile and shutdown so two callers (for
 	// example a config-file watch and a SIGHUP handler) can never both
 	// start an engine for the same stream id at once.
@@ -84,11 +101,16 @@ type Supervisor struct {
 // New builds a Supervisor.
 func New(l Launcher, b Backoff) *Supervisor {
 	return &Supervisor{
-		launcher:      l,
-		backoff:       b,
-		shutdownGrace: defaultShutdownGrace,
-		running:       map[string]*streamHandle{},
-		status:        map[string]*StreamStatus{},
+		launcher:             l,
+		backoff:              b,
+		shutdownGrace:        defaultShutdownGrace,
+		livenessTimeout:      defaultLivenessTimeout,
+		livenessStartupGrace: defaultLivenessStartupGrace,
+		livenessInterval:     defaultLivenessInterval,
+		now:                  time.Now,
+		statMtime:            statFileMtime,
+		running:              map[string]*streamHandle{},
+		status:               map[string]*StreamStatus{},
 	}
 }
 
@@ -227,6 +249,11 @@ func (s *Supervisor) superviseOne(ctx context.Context, sp Spec, done chan struct
 
 		exited := make(chan struct{})
 		go func() { _ = proc.Wait(); close(exited) }()
+		// The liveness watchdog runs only for this process instance and returns
+		// when it exits (killed by the watchdog, by ctx cancel, or on its own).
+		if sp.LivenessFile != "" {
+			go s.watchLiveness(sp, proc, exited)
+		}
 		select {
 		case <-ctx.Done():
 			s.stopProcess(proc, exited)
@@ -238,6 +265,30 @@ func (s *Supervisor) superviseOne(ctx context.Context, sp Spec, done chan struct
 		s.record(sp.ID, Restarting, attempt)
 		if !s.sleep(ctx, s.backoff.Next(attempt-1)) {
 			return
+		}
+	}
+}
+
+// watchLiveness SIGKILLs proc when its LivenessFile stops being rewritten for
+// longer than the liveness timeout (after a startup grace), turning an
+// alive-but-hung process into an ordinary restart driven by superviseOne. A
+// SIGKILL leaves no trace in the engine's own log, so the kill is logged here.
+// It returns as soon as the process exits for any reason.
+func (s *Supervisor) watchLiveness(sp Spec, proc Process, exited <-chan struct{}) {
+	st := livenessState{startedAt: s.now()}
+	t := time.NewTicker(s.livenessInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-exited:
+			return
+		case <-t.C:
+			mtime, _ := s.statMtime(sp.LivenessFile)
+			if st.stalled(s.now(), mtime, s.livenessStartupGrace, s.livenessTimeout) {
+				log.Printf("supervisor: %s produced no output for over %s; killing hung process for restart", sp.ID, s.livenessTimeout)
+				_ = proc.Signal(syscall.SIGKILL)
+				return
+			}
 		}
 	}
 }

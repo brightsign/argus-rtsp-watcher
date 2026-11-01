@@ -251,6 +251,12 @@ func buildSpecs(w config.Watcher, opts configgen.Options, engineBin, extDir, cfg
 		if err := os.WriteFile(outPath, rendered, 0o644); err != nil {
 			return nil, err
 		}
+		framesDir := configgen.FramesDir(opts, s.ID)
+		if err := os.MkdirAll(framesDir, 0o755); err != nil {
+			return nil, err
+		}
+		outputFrame := filepath.Join(framesDir, "output.jpg")
+
 		sum := sha256.Sum256(rendered)
 		env := append([]string{}, engineEnv...)
 		env = append(env, "GST_REGISTRY=/tmp/gst-"+s.ID+".bin")
@@ -260,14 +266,13 @@ func buildSpecs(w config.Watcher, opts configgen.Options, engineBin, extDir, cfg
 			Args:        []string{"--config", outPath},
 			Env:         env,
 			Fingerprint: hex.EncodeToString(sum[:]),
+			// The engine rewrites outputFrame every frame; the supervisor's
+			// liveness watchdog restarts it if that stops while it is alive.
+			LivenessFile: outputFrame,
 		})
 
-		framesDir := configgen.FramesDir(opts, s.ID)
-		if err := os.MkdirAll(framesDir, 0o755); err != nil {
-			return nil, err
-		}
 		previewArgs := []string{
-			"-file", filepath.Join(framesDir, "output.jpg"),
+			"-file", outputFrame,
 			"-port", strconv.Itoa(previewPort(index)),
 		}
 		previewSum := sha256.Sum256([]byte(strings.Join(previewArgs, "\x00")))
