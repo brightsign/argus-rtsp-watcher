@@ -2,6 +2,7 @@
 #include "metrics/log_global.h"
 #include "metrics/stage_stats.h"
 #include "input/camera_time.h"
+#include "input/pipeline_latency.h"
 #include "input/stream_ready_backoff.h"
 #include <atomic>
 #include <optional>
@@ -482,8 +483,10 @@ public:
     }
 
     // source_wall_ns receives the camera's capture time of the pulled frame
-    // (Unix epoch ns), or 0 when it is unavailable.
-    bool pull_into_rgb(std::vector<uint8_t>& rgb_out, int& out_w, int& out_h, int64_t& source_wall_ns) {
+    // (Unix epoch ns), or 0 when it is unavailable. pipeline_latency_ns receives
+    // the camera-clock-independent media-chain latency (ns), or -1 when unavailable.
+    bool pull_into_rgb(std::vector<uint8_t>& rgb_out, int& out_w, int& out_h,
+                       int64_t& source_wall_ns, int64_t& pipeline_latency_ns) {
         if (!pipeline_ || !appsink_) return false;
         if (broken_.load(std::memory_order_acquire)) return false;
 
@@ -498,6 +501,7 @@ public:
             if (!buffer || !caps) { gst_sample_unref(sample); continue; }
 
             source_wall_ns = camera_time_enabled_ ? lookup_source_time(buffer) : 0;
+            pipeline_latency_ns = measure_pipeline_latency_ns(buffer);
 
             GstVideoInfo vinfo;
             if (!gst_video_info_from_caps(&vinfo, caps)) { gst_sample_unref(sample); continue; }
@@ -721,6 +725,28 @@ private:
         return *found;
     }
 
+    // The camera-clock-independent media-chain latency of a decoded frame, in
+    // nanoseconds, or -1 when it cannot be measured. The buffer's PTS is its
+    // running-time (presentation time relative to the pipeline's base-time); the
+    // pipeline clock's "now", reduced to running-time by subtracting base-time,
+    // less that PTS, is how long the frame has spent in the pipeline. Both terms
+    // come from the player's own clock, so an unsynchronized camera clock cannot
+    // distort it (unlike lookup_source_time, which uses the camera's NTP time).
+    // Runs on the capture thread.
+    int64_t measure_pipeline_latency_ns(GstBuffer* buffer) {
+        const GstClockTime pts = GST_BUFFER_PTS(buffer);
+        if (!GST_CLOCK_TIME_IS_VALID(pts)) return -1;
+        GstClock* clock = gst_element_get_clock(appsink_);
+        if (!clock) return -1;
+        const GstClockTime now = gst_clock_get_time(clock);
+        gst_object_unref(clock);
+        const GstClockTime base = gst_element_get_base_time(appsink_);
+        if (!GST_CLOCK_TIME_IS_VALID(now) || now < base) return -1;
+        const auto age = pipeline_latency::age_ns(static_cast<int64_t>(now - base),
+                                                  static_cast<int64_t>(pts));
+        return age ? *age : -1;
+    }
+
     // Accumulates the NV12 -> full-resolution BGR convert cost (RGA, or the
     // OpenCV fallback) and logs one summary per window at debug level, with
     // the frame size so the cost can be read against the megapixel count.
@@ -853,7 +879,9 @@ FetchStatus RtspInputSource::tryFetch(FrameView& out) noexcept {
   }
 
   int64_t source_wall_ns = 0;
-  if (!p_->rtsp_helper->pull_into_rgb(p_->rgb_frame_, p_->frame_w_, p_->frame_h_, source_wall_ns)) {
+  int64_t pipeline_latency_ns = -1;
+  if (!p_->rtsp_helper->pull_into_rgb(p_->rgb_frame_, p_->frame_w_, p_->frame_h_,
+                                      source_wall_ns, pipeline_latency_ns)) {
     return FetchStatus::Timeout;
   }
 
@@ -868,6 +896,7 @@ FetchStatus RtspInputSource::tryFetch(FrameView& out) noexcept {
   out.pts_ns  = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count();
   out.source_wall_ns = source_wall_ns;
+  out.pipeline_latency_ns = pipeline_latency_ns;
 
   // Frame is stored at native RTSP resolution (no downscale); orig == frame dims
   out.orig_width  = p_->frame_w_;

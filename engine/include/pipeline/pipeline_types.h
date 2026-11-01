@@ -81,6 +81,9 @@ struct PipelineResult {
   int people_count{0};      // YOLOX: person detections
   int gaze_count{0};        // RetinaFace: faces looking at screen
   int fps{0};               // Actual frame processing rate
+  // Camera-clock-independent media-chain latency (ms), windowed average; <0 =
+  // unavailable. Published as health.queue_latency_ms (see pipeline_latency.h).
+  int64_t pipeline_latency_ms{-1};
   int frame_width{0};       // V6.2: Frame width for normalized speed
   int frame_height{0};      // V6.2: Frame height for normalized speed
   LightState light{};       // Latest light/dark measurement (valid when light_enabled)

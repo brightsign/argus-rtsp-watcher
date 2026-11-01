@@ -190,6 +190,7 @@ bool MqttPublisher::publish_result(const PipelineResult& r) noexcept {
     det_seq_ = r.det_seq;
     det_capture_wall_ns_ = r.det_capture_wall_ns;
     det_source_wall_ns_ = r.det_source_wall_ns;
+    pipeline_latency_ms_ = r.pipeline_latency_ms;
     // Use FPS from PipelineResult instead of calculating from frames_accum_
     frames_accum_ = r.fps;  // Store actual FPS in frames_accum_ for use in payload
     frame_width_  = r.frame_width;   // V6.2: Store for normalized speed
@@ -337,7 +338,7 @@ std::string MqttPublisher::make_payload_locked() const {
     "\"scene\":{\"person_count\":%d,\"employee_count\":%d,"
                "\"customer_count\":%d,\"unknown_uniform_count\":%d},"
     "\"roi\":{\"type\":\"border\",\"border_frac\":0.30,\"rect\":[%d,%d,%d,%d]},"
-    "\"health\":{\"detector_fps\":%.1f,\"tracker_fps\":%.1f,\"queue_latency_ms\":0,\"dropped_frames\":%d,\"last_model_reload_ts\":%.1f},",
+    "\"health\":{\"detector_fps\":%.1f,\"tracker_fps\":%.1f,\"queue_latency_ms\":%d,\"dropped_frames\":%d,\"last_model_reload_ts\":%.1f},",
     ts_s,
     cfg_.device_id.c_str(),
     cfg_.stream_id.c_str(),
@@ -350,7 +351,11 @@ std::string MqttPublisher::make_payload_locked() const {
     // ROI rect (30% border inset)
     int(frame_width_ * 0.30f), int(frame_height_ * 0.30f),
     int(frame_width_ * 0.70f), int(frame_height_ * 0.70f),
-    detector_fps_, tracker_fps_, dropped_frames_, last_model_reload_ts_);
+    // queue_latency_ms carries the camera-clock-independent media-chain latency;
+    // it falls back to 0 (the field's historical placeholder) when unavailable.
+    detector_fps_, tracker_fps_,
+    pipeline_latency_ms_ >= 0 ? static_cast<int>(pipeline_latency_ms_) : 0,
+    dropped_frames_, last_model_reload_ts_);
   payload_buffer_ += header;
 
   // Additive scene-level light/dark summary; omitted entirely when detection is

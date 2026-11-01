@@ -83,3 +83,25 @@ TEST(FrameStampText, AverageLabelNamesTheWindowItUses) {
     const std::string label = "avg" + std::to_string(metrics::kLagAverageWindowSeconds) + "s";
     EXPECT_NE(format_frame_stamp_text(1, kWallNs, kWallNs, 5).find(label), std::string::npos);
 }
+
+TEST(FrameStampText, ShowsPipelineLatencyAfterTheCameraLagFields) {
+    EXPECT_EQ(format_frame_stamp_text(1, kWallNs, kWallNs - 55 * kMillisecondNs, 61, 142),
+              "#1  2026-10-25T13:29:53.925Z  lag 55ms  avg15s 61ms  pipe 142ms");
+}
+
+TEST(FrameStampText, ShowsPipelineLatencyEvenWithoutCameraTime) {
+    // The pipeline latency is camera-clock-independent, so it must appear even
+    // when no camera time is available and the lag/avg fields are suppressed.
+    EXPECT_EQ(format_frame_stamp_text(1, kWallNs, 0, std::nullopt, 142),
+              "#1  2026-10-25T13:29:53.925Z  pipe 142ms");
+}
+
+TEST(FrameStampText, ZeroPipelineLatencyIsStillShown) {
+    EXPECT_EQ(format_frame_stamp_text(1, kWallNs, 0, std::nullopt, 0),
+              "#1  2026-10-25T13:29:53.925Z  pipe 0ms");
+}
+
+TEST(FrameStampText, NoPipelineLatencyWhenUnavailable) {
+    EXPECT_EQ(format_frame_stamp_text(1, kWallNs, 0, std::nullopt, std::nullopt),
+              "#1  2026-10-25T13:29:53.925Z");
+}

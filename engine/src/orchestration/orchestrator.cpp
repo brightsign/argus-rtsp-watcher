@@ -847,6 +847,7 @@ void Orchestrator::supervisor_loop() noexcept {
         result.det_capture_wall_ns = fusion_.yolo_capture_wall_ns;
         result.det_source_wall_ns = fusion_.yolo_source_wall_ns;
         result.fps = calculated_fps;
+        result.pipeline_latency_ms = pipeline_latency_ms_.load(std::memory_order_relaxed);
         result.frame_width = fusion_.frame_width;   // V6.2: For normalized speed
         result.frame_height = fusion_.frame_height; // V6.2: For normalized speed
         result.light_enabled = cfg_.light.enabled;
@@ -1363,6 +1364,9 @@ void Orchestrator::capture_loop_threadfn() noexcept {
     uint64_t frames_with_camera_time = 0;  // within the current window
     int64_t last_camera_lag_ms = 0;        // engine capture minus camera capture, latest frame
     metrics::WindowedAverage lag_average(metrics::kLagAverageWindowNs);  // shown on the stamp
+    // Camera-clock-independent media-chain latency (ms), averaged over the same
+    // window. Unlike lag_average it is immune to an unsynchronized camera clock.
+    metrics::WindowedAverage pipeline_latency_average(metrics::kLagAverageWindowNs);
 
     while (!stop_capture_.load(std::memory_order_relaxed)) {
         // Try to fetch next frame from input source
@@ -1403,6 +1407,17 @@ void Orchestrator::capture_loop_threadfn() noexcept {
             // on only some of them; it travels to the stamp inside the frame.
             lag_average.add(metrics::steady_now_ns(), last_camera_lag_ms);
             sf->lag_average_ms = static_cast<int64_t>(std::llround(*lag_average.mean()));
+        }
+
+        // Camera-clock-independent latency: the time the frame spent inside the
+        // GStreamer pipeline, averaged like the camera lag above so the stamp and
+        // the MQTT health field read a stable number rather than per-frame jitter.
+        if (camView.pipeline_latency_ns >= 0) {
+            const int64_t latency_ms = camView.pipeline_latency_ns / 1000000LL;
+            pipeline_latency_average.add(metrics::steady_now_ns(), latency_ms);
+            const int64_t avg_ms = static_cast<int64_t>(std::llround(*pipeline_latency_average.mean()));
+            sf->pipeline_latency_ms = avg_ms;
+            pipeline_latency_ms_.store(avg_ms, std::memory_order_relaxed);
         }
 
         // V7.1: Preserve original camera/stream dimensions for coordinate transforms

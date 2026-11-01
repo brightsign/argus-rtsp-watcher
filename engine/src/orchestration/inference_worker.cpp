@@ -53,19 +53,23 @@ constexpr int kStampMarginPx = 4;
 constexpr int kStampScaleRefPx = 600;
 
 // Burns the frame stamp onto 'canvas' in-place, in the lower-left corner:
-// "#<seq>  <ISO-8601 UTC>.<ms>Z[  lag <ms>ms  avg15s <ms>ms]" (white on a filled
-// dark background), built from wall_ns. The lag suffix (engine time minus camera
-// capture time) appears only when source_wall_ns, the camera's own capture time,
-// is known; the running average follows it when lag_average_ms is supplied.
+// "#<seq>  <ISO-8601 UTC>.<ms>Z[  lag <ms>ms  avg15s <ms>ms][  pipe <ms>ms]"
+// (white on a filled dark background), built from wall_ns. The lag suffix (engine
+// time minus camera capture time) appears only when source_wall_ns, the camera's
+// own capture time, is known; the running average follows it when lag_average_ms
+// is supplied. The pipe suffix (camera-clock-independent media-chain latency)
+// appears whenever pipeline_latency_ms is supplied, independent of camera time.
 void draw_frame_stamp(cv::Mat& canvas, uint64_t seq, int64_t wall_ns, int64_t source_wall_ns,
-                      std::optional<int64_t> lag_average_ms) {
+                      std::optional<int64_t> lag_average_ms,
+                      std::optional<int64_t> pipeline_latency_ms) {
     if (canvas.empty()) return;
 
     const int H = canvas.rows;
     auto scaled = [H](int base) { return std::max(base, (H * base + kStampScaleRefPx / 2) / kStampScaleRefPx); };
     const int margin = scaled(kStampMarginPx);
 
-    const std::string text = format_frame_stamp_text(seq, wall_ns, source_wall_ns, lag_average_ms);
+    const std::string text = format_frame_stamp_text(seq, wall_ns, source_wall_ns,
+                                                      lag_average_ms, pipeline_latency_ms);
 
     const int font = cv::FONT_HERSHEY_SIMPLEX;
     const double font_scale = std::max(0.5, 0.5 * H / static_cast<double>(kStampScaleRefPx));
@@ -526,7 +530,7 @@ void run_inference_loop(
                 // (we're already inside the `if (frame_writer)` branch).
                 if (config.enable_frame_stamp) {
                     draw_frame_stamp(vis_canvas, sf->seq, sf->capture_wall_ns, sf->source_wall_ns,
-                                     sf->lag_average_ms);
+                                     sf->lag_average_ms, sf->pipeline_latency_ms);
                 }
 
                 const int64_t write_start_ns = metrics::steady_now_ns();

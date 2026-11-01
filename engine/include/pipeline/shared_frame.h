@@ -20,6 +20,12 @@ struct SharedFrame {
     /// Running mean of camera-to-engine lag (ms) over the last metrics::kLagAverageWindowSeconds,
     /// across every captured frame including this one; empty when this frame has no camera time.
     std::optional<int64_t> lag_average_ms;
+    /// Running mean (ms) over the last metrics::kLagAverageWindowSeconds of the
+    /// media-chain latency: how long each frame sat inside the GStreamer pipeline
+    /// (transport+depay+decode+queue), measured against the pipeline clock. Unlike
+    /// lag_average_ms it does not depend on the camera's wall clock, so it stays
+    /// meaningful when a camera's clock is unsynchronized. Empty when unavailable.
+    std::optional<int64_t> pipeline_latency_ms;
 
     int width{0};            ///< Frame width in pixels (preprocessed/resized)
     int height{0};           ///< Frame height in pixels (preprocessed/resized)

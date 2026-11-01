@@ -160,6 +160,9 @@ private:
   // Wall-clock (CLOCK_REALTIME ns) minted alongside frame_seq_ at capture,
   // for the frame_seq/frame_ts video<->MQTT sync key (see capture_loop_threadfn).
   std::atomic<int64_t> capture_wall_ns_{0};
+  // Latest windowed-average media-chain latency (ms), camera-clock independent
+  // (see pipeline_latency.h); -1 when unavailable. Published as health.queue_latency_ms.
+  std::atomic<int64_t> pipeline_latency_ms_{-1};
 
   // ---- Fusion state: shared analytics result from both models ----
   // The inference workers write into the FusionResults part. It is a base class,

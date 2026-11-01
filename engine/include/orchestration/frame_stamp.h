@@ -27,9 +27,15 @@ constexpr int64_t kNanosecondsPerSecond = 1000000000LL;
 // Unix epoch; a source_wall_ns of 0 means the camera time is unavailable, and
 // then neither suffix is shown, whatever lag_average_ms holds, because an
 // average with no current lag beside it would be stale.
+//
+// "  pipe <ms>ms" is appended last when pipeline_latency_ms is supplied. It is
+// the camera-clock-independent media-chain latency (time the frame spent inside
+// the player pipeline; see pipeline_latency.h) and is shown on its own merits,
+// independent of source_wall_ns, because it does not depend on the camera clock.
 inline std::string format_frame_stamp_text(uint64_t seq, int64_t wall_ns,
                                            int64_t source_wall_ns,
-                                           std::optional<int64_t> lag_average_ms = std::nullopt) {
+                                           std::optional<int64_t> lag_average_ms = std::nullopt,
+                                           std::optional<int64_t> pipeline_latency_ms = std::nullopt) {
   assert(wall_ns >= 0);
   const time_t wall_secs = static_cast<time_t>(wall_ns / kNanosecondsPerSecond);
   const int wall_millis =
@@ -58,6 +64,13 @@ inline std::string format_frame_stamp_text(uint64_t seq, int64_t wall_ns,
                     static_cast<long long>(*lag_average_ms));
       line += average;
     }
+  }
+
+  if (pipeline_latency_ms) {
+    char pipe[32];
+    std::snprintf(pipe, sizeof(pipe), "  pipe %lldms",
+                  static_cast<long long>(*pipeline_latency_ms));
+    line += pipe;
   }
   return line;
 }
