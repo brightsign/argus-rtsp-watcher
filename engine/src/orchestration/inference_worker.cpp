@@ -1,6 +1,8 @@
 #include "orchestration/inference_worker.h"
 #include "orchestration/visualization.h"
 #include "orchestration/frame_stamp.h"
+#include "orchestration/letterbox.h"
+#include "pipeline/frame_rate_limiter.h"
 #include "models/model_runner.h"
 #include "models/model_runner_retinaface.h"
 #include "models/model_runner_yolox.h"
@@ -11,10 +13,13 @@
 #include "image_utils.h"
 #include "common.h"
 #include "metrics/log_global.h"
+#include "metrics/stage_stats.h"
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <rga/rga.h>
 #include <rga/im2d.h>
+#include <algorithm>
+#include <optional>
 #include <thread>
 #include <chrono>
 #include <cstring>
@@ -30,113 +35,41 @@ static bool should_process_frame(uint64_t seq, int skip_frames) noexcept {
     return (seq & (skip_frames - 1)) == 0;  // Bitmask for power-of-2 skip
 }
 
-// Fixed pixel layout for the machine-readable frame_seq stamp, documented
-// here so an external decoder can sample cell centers directly from a
-// recorded (possibly JPEG-recompressed) frame with no other context.
+// Layout of the human-readable frame stamp.
 //
-//   - Scale: the whole stamp scales continuously with frame height H
-//     (= canvas.rows) so it reads the same at any resolution. Each base px
-//     dimension D below is drawn at scaled(D) = max(D, round(D*H/kStampScaleRefPx))
-//     px (kStampScaleRefPx = 600; round via integer (D*H + 300)/600). So
-//     cell = scaled(kStampCellPx), margin = scaled(kStampMarginPx),
-//     text_band = scaled(kStampTextBandPx). A decoder MUST compute
-//     cell/margin/text_band the same way from H before sampling.
-//   - Both stamps sit in the lower-left corner, stacked: the human-readable
-//     text is pinned to the very bottom of the frame, and the machine-readable
-//     bit grid sits directly ABOVE it. Positions are bottom-anchored (depend
-//     on H).
-//   - Text band: the bottom text_band px are reserved for the human-readable
-//     line (its baseline is at H - margin).
-//   - Quiet zone: a solid black rectangle, one cell wide on every side, drawn
-//     from (margin, H - text_band - quiet_h) to (margin + quiet_w,
-//     H - text_band), where quiet_w = (kStampCols + 2) * cell and
-//     quiet_h = (kStampRows + 2) * cell.
-//   - Bit grid: kStampCols (8) columns x kStampRows (9) rows of solid
-//     cell x cell px cells, starting one cell in from the quiet zone's outer
-//     edge, i.e. grid cell [0,0]'s top-left corner is at
-//     grid_x0 = margin + cell,
-//     grid_y0 = H - text_band - quiet_h + cell
-//             = H - text_band - (kStampRows + 1) * cell.
-//   - Cell color: pure black (0,0,0) = bit 0, pure white (255,255,255) =
-//     bit 1. cell is >= 10px (scale >= 1) so cells survive JPEG.
-//   - Bit order: row r in [0,7] holds seq byte r MSB-first (row 0 = bits
-//     63-56 of frame_seq, row 7 = bits 7-0); row 8 holds an 8-bit XOR
-//     checksum of those 8 bytes, letting a decoder validate the read before
-//     trusting it. Within a row, column c in [0,7] holds bit (7-c) of that
-//     row's byte (MSB first, left to right).
-//     See encode_frame_stamp_bytes() (orchestration/frame_stamp.h) for the
-//     exact byte/checksum computation, unit tested independently.
-//   - A decoder samples the pixel at each cell's center: cell [row,col]'s
-//     center is at (grid_x0 + col*cell + cell/2, grid_y0 + row*cell + cell/2).
+//   - Scale: the stamp scales continuously with frame height H (= canvas.rows)
+//     so it reads the same at any resolution. Each base px dimension D below is
+//     drawn at scaled(D) = max(D, round(D*H/kStampScaleRefPx)) px
+//     (kStampScaleRefPx = 600; round via integer (D*H + 300)/600).
+//   - The text sits in the lower-left corner, pinned to the very bottom of the
+//     frame (its baseline is at H - margin), on a filled black box.
+//   - It is for a person to see that time is advancing. A program relates
+//     boxes to a frame through the MQTT det_seq/det_ts/source_ts fields.
 namespace {
-// BASE (1x) sizes; the drawn stamp multiplies these by an integer 'scale'
-// derived from frame height (see layout comment above).
-constexpr int kStampCellPx = 10;
+// BASE (1x) margin; the drawn stamp multiplies it by a factor derived from
+// frame height (see layout comment above).
 constexpr int kStampMarginPx = 4;
-constexpr int kStampCols = 8;
-constexpr int kStampRows = 9;  // 8 seq-byte rows + 1 checksum row
-// Reserved height (px, 1x) of the bottom band holding the human-readable line;
-// comfortably exceeds the ~19px the text occupies at font_scale 0.5, so the
-// bit grid drawn just above it never overlaps.
-constexpr int kStampTextBandPx = 28;
-// Frame-height reference for the integer scale factor: scale = max(1, round(H/ref)).
+// Frame-height reference for the scale factor: scale = max(1, round(H/ref)).
 constexpr int kStampScaleRefPx = 600;
 
-// Burns both stamps onto 'canvas' in-place, stacked in the lower-left corner:
-//  - Human-readable "#<seq>  <ISO-8601 UTC>.<ms>Z" text (white on a filled
-//    dark background) pinned to the very bottom, built from wall_ns.
-//  - Machine-readable bit grid directly ABOVE the text band (see layout above).
-void draw_frame_stamp(cv::Mat& canvas, uint64_t seq, int64_t wall_ns) {
+// Burns the frame stamp onto 'canvas' in-place, in the lower-left corner:
+// "#<seq>  <ISO-8601 UTC>.<ms>Z[  lag <ms>ms  avg15s <ms>ms][  pipe <ms>ms]"
+// (white on a filled dark background), built from wall_ns. The lag suffix (engine
+// time minus camera capture time) appears only when source_wall_ns, the camera's
+// own capture time, is known; the running average follows it when lag_average_ms
+// is supplied. The pipe suffix (camera-clock-independent media-chain latency)
+// appears whenever pipeline_latency_ms is supplied, independent of camera time.
+void draw_frame_stamp(cv::Mat& canvas, uint64_t seq, int64_t wall_ns, int64_t source_wall_ns,
+                      std::optional<int64_t> lag_average_ms,
+                      std::optional<int64_t> pipeline_latency_ms) {
     if (canvas.empty()) return;
 
-    // Scale the whole stamp (grid + text) continuously with frame height so it
-    // reads the same at any resolution; each dimension is floored at its base so
-    // low-res frames keep >=10px cells (JPEG-survivable). A decoder computes
-    // cell/margin/text_band the same way from H.
     const int H = canvas.rows;
     auto scaled = [H](int base) { return std::max(base, (H * base + kStampScaleRefPx / 2) / kStampScaleRefPx); };
-    const int cell = scaled(kStampCellPx);
     const int margin = scaled(kStampMarginPx);
-    const int text_band = scaled(kStampTextBandPx);
 
-    // --- Machine-readable bit grid (bottom-anchored, above the text band) ---
-    const int quiet_w = (kStampCols + 2) * cell;
-    const int quiet_h = (kStampRows + 2) * cell;
-    const int quiet_x0 = margin;
-    const int quiet_y0 = canvas.rows - text_band - quiet_h;
-    cv::rectangle(canvas,
-                  cv::Point(quiet_x0, quiet_y0),
-                  cv::Point(quiet_x0 + quiet_w, quiet_y0 + quiet_h),
-                  cv::Scalar(0, 0, 0), cv::FILLED);
-
-    const std::array<uint8_t, 9> stamp_bytes = encode_frame_stamp_bytes(seq);
-    const int grid_x0 = quiet_x0 + cell;
-    const int grid_y0 = quiet_y0 + cell;
-
-    for (int row = 0; row < kStampRows; ++row) {
-        const uint8_t byte_val = stamp_bytes[static_cast<size_t>(row)];
-        for (int col = 0; col < kStampCols; ++col) {
-            const bool bit = ((byte_val >> (7 - col)) & 0x1) != 0;
-            const cv::Scalar color = bit ? cv::Scalar(255, 255, 255) : cv::Scalar(0, 0, 0);
-            const int x0 = grid_x0 + col * cell;
-            const int y0 = grid_y0 + row * cell;
-            cv::rectangle(canvas, cv::Point(x0, y0),
-                          cv::Point(x0 + cell, y0 + cell),
-                          color, cv::FILLED);
-        }
-    }
-
-    // --- Human-readable stamp (pinned to the very bottom of the frame) ---
-    const time_t wall_secs = static_cast<time_t>(wall_ns / 1000000000LL);
-    const int wall_millis = static_cast<int>((wall_ns / 1000000LL) % 1000LL);
-    struct tm tm_utc{};
-    gmtime_r(&wall_secs, &tm_utc);
-
-    char text[96];
-    std::snprintf(text, sizeof(text), "#%llu  %04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
-                  static_cast<unsigned long long>(seq),
-                  tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday,
-                  tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec, wall_millis);
+    const std::string text = format_frame_stamp_text(seq, wall_ns, source_wall_ns,
+                                                      lag_average_ms, pipeline_latency_ms);
 
     const int font = cv::FONT_HERSHEY_SIMPLEX;
     const double font_scale = std::max(0.5, 0.5 * H / static_cast<double>(kStampScaleRefPx));
@@ -220,13 +153,8 @@ static bool resize_frame_rga(
     // YOLOX expects letterboxed input (maintain aspect ratio + black padding)
     // Previous code was stretching/squashing, causing wrong detections
     
-    // Calculate letterbox parameters
-    float scale = std::min(float(dst_w) / src_w, float(dst_h) / src_h);
-    int letterbox_w = int(src_w * scale);
-    int letterbox_h = int(src_h * scale);
-    int pad_x = (dst_w - letterbox_w) / 2;
-    int pad_y = (dst_h - letterbox_h) / 2;
-    
+    const letterbox::Geometry geometry = letterbox::compute(src_w, src_h, dst_w, dst_h);
+
     // Resize destination buffer to target size and fill with black
     if (dst_buf.size() != size_t(dst_w) * dst_h * 3) {
         dst_buf.resize(size_t(dst_w) * dst_h * 3);
@@ -238,10 +166,10 @@ static bool resize_frame_rga(
     cv::Mat dst_full(dst_h, dst_w, CV_8UC3, dst_buf.data());
     
     // Create ROI in destination for the letterboxed image (skip padding area)
-    cv::Mat dst_roi = dst_full(cv::Rect(pad_x, pad_y, letterbox_w, letterbox_h));
-    
+    cv::Mat dst_roi = dst_full(cv::Rect(geometry.pad_x, geometry.pad_y, geometry.content_w, geometry.content_h));
+
     // Resize source to fit in ROI (maintains aspect ratio)
-    cv::resize(src_mat, dst_roi, cv::Size(letterbox_w, letterbox_h), 0, 0, cv::INTER_LINEAR);
+    cv::resize(src_mat, dst_roi, cv::Size(geometry.content_w, geometry.content_h), 0, 0, cv::INTER_LINEAR);
     
     return true;
 }
@@ -272,9 +200,10 @@ static void store_inference_results(
     IModelRunner* runner,
     const InferenceOutputs& outs,
     FusionResults* fusion_output,
-    uint64_t seq) noexcept 
+    const SharedFrame& frame) noexcept
 {
     if (!fusion_output) return;
+    const uint64_t seq = frame.seq;
 
     std::lock_guard<std::mutex> g(fusion_output->m);
 
@@ -308,6 +237,8 @@ static void store_inference_results(
     } else if (yolox_runner) {
         fusion_output->yolo_dets.assign(outs.dets, outs.dets + outs.num_dets);
         fusion_output->yolo_seq = seq;
+        fusion_output->yolo_capture_wall_ns = frame.capture_wall_ns;
+        fusion_output->yolo_source_wall_ns = frame.source_wall_ns;
         
         #ifdef ENABLE_DEBUG
         if (seq % 30 == 0) {
@@ -357,7 +288,32 @@ void run_inference_loop(
         zone::DetectCounter zone_counter;
         zone_counter.window_ms = std::max(1, config.zone.window_minutes) * 60000LL;
 
+        // Per-stage cost of each frame, summarized once per window at debug
+        // level (log_level=debug). The writer saves only one frame in every
+        // `stride`, so write's average is a fraction of one encode and its max is
+        // the real per-encode cost.
+        constexpr int64_t kTimingWindowNs = 1000000000LL;
+        metrics::StageStats resize_stats, infer_stats, clone_stats, overlay_stats,
+                            post_stats, write_stats, frame_stats;
+        int64_t timing_window_start_ns = metrics::steady_now_ns();
+
+        // Caps how often a frame is started, so a stream configured for N fps is
+        // processed at N fps rather than as fast as the NPU allows. Sleeps are cut
+        // into short slices so a stop request is honoured promptly.
+        pipeline::FrameRateLimiter limiter(config.target_fps);
+        constexpr int64_t kMaxSleepSliceNs = 5'000'000;
+
         while (!stop_flag.load(std::memory_order_relaxed)) {
+            // Wait out the rest of this frame's slot BEFORE taking a frame: the
+            // mailbox always holds the newest frame, so one taken at the start of
+            // its slot is as fresh as it can be, where one taken the moment the
+            // last frame finished may already have been waiting.
+            const int64_t slot_wait_ns = limiter.wait_ns(metrics::steady_now_ns());
+            if (slot_wait_ns > 0) {
+                std::this_thread::sleep_for(std::chrono::nanoseconds(std::min(slot_wait_ns, kMaxSleepSliceNs)));
+                continue;
+            }
+
             // Get next frame from mailbox
             auto sf = frame_mailbox->takeFrame();
             if (!sf) {
@@ -378,6 +334,9 @@ void run_inference_loop(
                 #endif
                 continue;
             }
+
+            // This frame takes the slot; the next may start one interval later.
+            limiter.mark_started(metrics::steady_now_ns());
 
             // Track processed frames (for inference FPS)
             fps_processed_count++;
@@ -404,6 +363,8 @@ void run_inference_loop(
                 continue;
             }
 
+            const int64_t frame_start_ns = metrics::steady_now_ns();
+
             // Resize frame via RGA hardware accelerator (BGR24 → BGR24)
             if (!resize_frame_rga(sf->bgr, sf->width, sf->height,
                                   rgb_resized_buf, dst_w, dst_h)) {
@@ -411,6 +372,8 @@ void run_inference_loop(
                         (unsigned long long)sf->seq, config.model_name.c_str());
                 continue;
             }
+            const int64_t resize_end_ns = metrics::steady_now_ns();
+            resize_stats.add_ns(resize_end_ns - frame_start_ns);
 
             // Prepare input frame view
             FrameView fv_in{};
@@ -423,9 +386,11 @@ void run_inference_loop(
                         (unsigned long long)sf->seq, config.model_name.c_str());
                 continue;
             }
+            const int64_t infer_end_ns = metrics::steady_now_ns();
+            infer_stats.add_ns(infer_end_ns - resize_end_ns);
 
             // Store results in fusion output FIRST (before visualization)
-            store_inference_results(runner, outs, fusion_output, sf->seq);
+            store_inference_results(runner, outs, fusion_output, *sf);
 
             // Draw overlays on full-resolution camera frame (sf->bgr is now at original RTSP res)
             // Detection coords are in camera/orig space; with canvas == camera size, scale=1.0, offset=0
@@ -437,11 +402,16 @@ void run_inference_loop(
             if (config.flip_horizontal) {
                 cv::flip(vis_canvas, vis_canvas, 1);  // 1 = horizontal flip
             }
+            const int64_t clone_end_ns = metrics::steady_now_ns();
+            clone_stats.add_ns(clone_end_ns - infer_end_ns);
 
             visualization::process_inference_results(runner, vis_canvas, debug_frame_idx,
                                                      sf->orig_width, sf->orig_height, second_runner,
-                                                     fusion_output, config.blur_config,
-                                                     config.flip_horizontal, config.zone);
+                                                     fusion_output,
+                                                     config.flip_horizontal, config.zone,
+                                                     config.draw_score_threshold);
+            const int64_t overlay_end_ns = metrics::steady_now_ns();
+            overlay_stats.add_ns(overlay_end_ns - clone_end_ns);
 
             // (flip already applied above — no post-visualization flip needed)
 
@@ -453,7 +423,7 @@ void run_inference_loop(
                 result.frame_width = sf->orig_width;    // Original camera dimensions for letterbox crop
                 result.frame_height = sf->orig_height;
 
-                // Populate face tracks for blur processing
+                // Populate face tracks (boxes + landmarks) into the result for output/analytics.
                 // Transform coordinates: RetinaFace model space (320x320) -> canvas space (dst_w x dst_h)
                 if (fusion_output && sf->orig_width > 0 && sf->orig_height > 0) {
                     std::lock_guard<std::mutex> g(fusion_output->m);
@@ -465,10 +435,8 @@ void run_inference_loop(
                         const float pad_y = (model_size - sf->orig_height * s) / 2.0f;
 
                         // Step 2: Canvas letterbox parameters
-                        const float canvas_scale = std::min((float)dst_w / sf->orig_width,
-                                                           (float)dst_h / sf->orig_height);
-                        const int offset_x = (dst_w - (int)(sf->orig_width * canvas_scale)) / 2;
-                        const int offset_y = (dst_h - (int)(sf->orig_height * canvas_scale)) / 2;
+                        const letterbox::Geometry canvas =
+                            letterbox::compute(sf->orig_width, sf->orig_height, dst_w, dst_h);
 
                         result.tracks.reserve(fusion_output->face_dets.size());
                         for (size_t i = 0; i < fusion_output->face_dets.size(); ++i) {
@@ -482,10 +450,10 @@ void run_inference_loop(
 
                             // Scale: camera space -> canvas space
                             Track t;
-                            t.box.x0 = cx0 * canvas_scale + offset_x;
-                            t.box.y0 = cy0 * canvas_scale + offset_y;
-                            t.box.x1 = cx1 * canvas_scale + offset_x;
-                            t.box.y1 = cy1 * canvas_scale + offset_y;
+                            t.box.x0 = canvas.to_dest_x(cx0);
+                            t.box.y0 = canvas.to_dest_y(cy0);
+                            t.box.x1 = canvas.to_dest_x(cx1);
+                            t.box.y1 = canvas.to_dest_y(cy1);
                             t.box.score = det.score;
                             t.box.class_id = det.class_id;
 
@@ -496,15 +464,13 @@ void run_inference_loop(
                         }
                     }
 
-                    // Populate person tracks from YOLOX detections for person blur.
+                    // Populate person tracks from YOLOX detections into the result.
                     // yolo_dets are already in camera space (de-letterboxed by the
                     // YOLOX runner), so only the camera -> canvas letterbox mapping
                     // is applied here.
                     if (!fusion_output->yolo_dets.empty()) {
-                        const float ycanvas_scale = std::min((float)dst_w / sf->orig_width,
-                                                             (float)dst_h / sf->orig_height);
-                        const int yoffset_x = (dst_w - (int)(sf->orig_width * ycanvas_scale)) / 2;
-                        const int yoffset_y = (dst_h - (int)(sf->orig_height * ycanvas_scale)) / 2;
+                        const letterbox::Geometry person_canvas =
+                            letterbox::compute(sf->orig_width, sf->orig_height, dst_w, dst_h);
 
                         result.person_tracks.reserve(fusion_output->yolo_dets.size());
                         for (const auto& det : fusion_output->yolo_dets) {
@@ -515,10 +481,10 @@ void run_inference_loop(
                             // Scale: camera space -> canvas space
                             TrackedBox tb{};
                             tb.id = -1;  // No tracking ID in this context
-                            tb.x0 = det.x0 * ycanvas_scale + yoffset_x;
-                            tb.y0 = det.y0 * ycanvas_scale + yoffset_y;
-                            tb.x1 = det.x1 * ycanvas_scale + yoffset_x;
-                            tb.y1 = det.y1 * ycanvas_scale + yoffset_y;
+                            tb.x0 = person_canvas.to_dest_x(det.x0);
+                            tb.y0 = person_canvas.to_dest_y(det.y0);
+                            tb.x1 = person_canvas.to_dest_x(det.x1);
+                            tb.y1 = person_canvas.to_dest_y(det.y1);
                             tb.score = det.score;
                             result.person_tracks.push_back(tb);
                         }
@@ -563,10 +529,39 @@ void run_inference_loop(
                 // painted over, and only when frame output is actually on
                 // (we're already inside the `if (frame_writer)` branch).
                 if (config.enable_frame_stamp) {
-                    draw_frame_stamp(vis_canvas, sf->seq, sf->capture_wall_ns);
+                    draw_frame_stamp(vis_canvas, sf->seq, sf->capture_wall_ns, sf->source_wall_ns,
+                                     sf->lag_average_ms, sf->pipeline_latency_ms);
                 }
 
+                const int64_t write_start_ns = metrics::steady_now_ns();
+                post_stats.add_ns(write_start_ns - overlay_end_ns);
                 frame_writer->writeFrame(vis_canvas, result);
+                write_stats.add_ns(metrics::steady_now_ns() - write_start_ns);
+            }
+
+            const int64_t frame_end_ns = metrics::steady_now_ns();
+            frame_stats.add_ns(frame_end_ns - frame_start_ns);
+            if (frame_end_ns - timing_window_start_ns >= kTimingWindowNs) {
+                LG_DEBUG("inference_worker: stage ms avg/max device=%s (%s) frames=%llu "
+                         "resize=%.1f/%.1f infer=%.1f/%.1f clone=%.1f/%.1f "
+                         "overlay=%.1f/%.1f post=%.1f/%.1f write=%.1f/%.1f total=%.1f/%.1f",
+                         config.device_id.c_str(), config.model_name.c_str(),
+                         (unsigned long long)frame_stats.count(),
+                         resize_stats.average_ms(), resize_stats.max_ms(),
+                         infer_stats.average_ms(), infer_stats.max_ms(),
+                         clone_stats.average_ms(), clone_stats.max_ms(),
+                         overlay_stats.average_ms(), overlay_stats.max_ms(),
+                         post_stats.average_ms(), post_stats.max_ms(),
+                         write_stats.average_ms(), write_stats.max_ms(),
+                         frame_stats.average_ms(), frame_stats.max_ms());
+                resize_stats.reset();
+                infer_stats.reset();
+                clone_stats.reset();
+                overlay_stats.reset();
+                post_stats.reset();
+                write_stats.reset();
+                frame_stats.reset();
+                timing_window_start_ns = frame_end_ns;
             }
 
             // Log periodically

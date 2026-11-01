@@ -1,6 +1,6 @@
 #include "orchestration/visualization.h"
 #include "orchestration/inference_worker.h"  // For FusionResults
-#include "output/face_blur.h"
+#include "orchestration/zone_strips.h"
 #include "models/model_runner.h"
 #include "models/model_runner_retinaface.h"
 #include "models/model_runner_yolox.h"
@@ -362,7 +362,8 @@ static void draw_yolo_detections(
     bool flip_h = false,
     FusionResults* fusion_output = nullptr,
     int orig_width = 0,
-    int orig_height = 0) noexcept
+    int orig_height = 0,
+    float min_confidence = 0.25f) noexcept
 {
     if (!yolox_runner) return;
 
@@ -416,7 +417,8 @@ static void draw_yolo_detections(
 
     int person_count = 0;
     static int debug_draw_count = 0;
-    const float min_confidence = 0.25f;  // Lower threshold to catch distant people
+    // min_confidence is passed in so the drawn boxes honor the per-stream
+    // confidence that also gates analytics, instead of a fixed floor.
 
     for (int i = 0; i < det_count; ++i) {
         const auto& det = dets[i];
@@ -512,70 +514,7 @@ static void draw_yolo_detections(
     #endif
 }
 
-// Apply blur to person bounding boxes BEFORE drawing overlays
-// Blur area is inset by box_thickness so drawn bounding boxes remain unblurred
-static void blur_persons(
-    cv::Mat& drawMat,
-    FusionResults* fusion_output,
-    const output::BlurConfig& blur_config,
-    float scale_x,
-    float scale_y,
-    int offset_x,
-    int offset_y,
-    int box_thickness = 2) noexcept
-{
-    if (!blur_config.enabled || !fusion_output) return;
-
-    // Lock fusion output and get YOLOX person detections
-    std::vector<Detection> yolo_dets_copy;
-    {
-        std::lock_guard<std::mutex> g(fusion_output->m);
-        if (fusion_output->yolo_dets.empty()) return;
-        yolo_dets_copy = fusion_output->yolo_dets;
-    }
-
-    std::vector<cv::Rect> person_bboxes;
-    person_bboxes.reserve(yolo_dets_copy.size());
-
-    const float min_confidence = 0.25f;  // Lower threshold to catch distant people
-
-    for (const auto& det : yolo_dets_copy) {
-        // Only blur person class (class_id == 0 in COCO)
-        if (det.class_id != 0) continue;
-        if (det.score < min_confidence) continue;
-
-        // Detections are already in camera space (de-letterboxed by YOLOX runner)
-        // Just apply scale and offset to map to canvas space (same as draw_yolo_detections)
-        int x0 = (int)(det.x0 * scale_x) + offset_x;
-        int y0 = (int)(det.y0 * scale_y) + offset_y;
-        int x1 = (int)(det.x1 * scale_x) + offset_x;
-        int y1 = (int)(det.y1 * scale_y) + offset_y;
-
-        // Inset by box_thickness so bounding box lines remain unblurred
-        x0 += box_thickness;
-        y0 += box_thickness;
-        x1 -= box_thickness;
-        y1 -= box_thickness;
-
-        // Only add valid rects
-        if (x1 > x0 && y1 > y0) {
-            person_bboxes.push_back(cv::Rect(x0, y0, x1 - x0, y1 - y0));
-        }
-    }
-
-    if (!person_bboxes.empty()) {
-        output::blur_faces(drawMat, person_bboxes, blur_config);
-        static int blur_log_count = 0;
-        if (blur_log_count < 5 || blur_log_count % 30 == 0) {
-            LG_DEBUG("[VIS-BLUR] Applied person blur to %zu regions (inset=%dpx)",
-                    person_bboxes.size(), box_thickness);
-        }
-        blur_log_count++;
-    }
-}
-
 // V7.0.2: Updated to accept FusionResults for synchronized detection access
-// V7.2: Added blur_config for applying person blur before drawing boxes
 void process_inference_results(
     IModelRunner* runner,
     cv::Mat& rgb_mat,
@@ -584,9 +523,9 @@ void process_inference_results(
     int orig_height,
     IModelRunner* second_runner,
     FusionResults* fusion_output,
-    const output::BlurConfig& blur_config,
     bool flip_h,
-    const zone::ZoneCfg& zone) noexcept
+    const zone::ZoneCfg& zone,
+    float draw_score_threshold) noexcept
 {
     if (!runner) return;
 
@@ -654,16 +593,21 @@ void process_inference_results(
         int zx1 = static_cast<int>(zone.x1 * orig_width * scale_x) + offset_x;
         int zy1 = static_cast<int>(zone.y1 * orig_height * scale_y) + offset_y;
         if (flip_h) { int t = drawMat.cols - zx0; zx0 = drawMat.cols - zx1; zx1 = t; }
-        cv::Mat overlay = drawMat.clone();
         const int line_thickness = zone.thickness > 0 ? zone.thickness : 1;
-        cv::rectangle(overlay, cv::Point(zx0, zy0), cv::Point(zx1, zy1),
-                      cv::Scalar(zone.b, zone.g, zone.r), line_thickness, cv::LINE_AA);
-        cv::addWeighted(overlay, 0.35, drawMat, 0.65, 0.0, drawMat);
-    }
-
-    // Apply privacy blur before drawing overlays so annotations remain visible
-    if (blur_config.enabled && fusion_output) {
-        blur_persons(drawMat, fusion_output, blur_config, scale_x, scale_y, offset_x, offset_y);
+        // Blend only the strips the outline can touch (see zone_strips.h). The
+        // pixels it never reaches blend to themselves, so cloning and blending the
+        // whole frame for a line a few pixels wide was pure cost: 8 ms at 640x480
+        // and over 17 ms at 1280x720.
+        for (const auto& strip : zone_strips::outline_strips(zx0, zy0, zx1, zy1, line_thickness,
+                                                             drawMat.cols, drawMat.rows)) {
+            cv::Mat region = drawMat(cv::Rect(strip.x, strip.y, strip.width, strip.height));
+            cv::Mat overlay = region.clone();
+            // The rectangle in this strip's own coordinates; OpenCV clips to the strip.
+            cv::rectangle(overlay, cv::Point(zx0 - strip.x, zy0 - strip.y),
+                          cv::Point(zx1 - strip.x, zy1 - strip.y),
+                          cv::Scalar(zone.b, zone.g, zone.r), line_thickness, cv::LINE_AA);
+            cv::addWeighted(overlay, 0.35, region, 0.65, 0.0, region);
+        }
     }
 
     // V6.2.3.5.6: Draw both face AND YOLOX detections (not mutually exclusive)
@@ -672,9 +616,8 @@ void process_inference_results(
     // V7.1: Pass orig_width/orig_height for dynamic de-letterbox calculation
     static int draw_debug_count = 0;
     if (draw_debug_count < 3) {
-        LG_DEBUG("[VIS-DRAW] retinaface_runner=%p yolox_runner=%p fusion_output=%p blur=%s",
-                retinaface_runner, yolox_runner, fusion_output,
-                blur_config.enabled ? "enabled" : "disabled");
+        LG_DEBUG("[VIS-DRAW] retinaface_runner=%p yolox_runner=%p fusion_output=%p",
+                retinaface_runner, yolox_runner, fusion_output);
         draw_debug_count++;
     }
 
@@ -682,7 +625,7 @@ void process_inference_results(
         draw_face_detections(drawMat, retinaface_runner, scale_x, scale_y, offset_x, offset_y, fusion_output, orig_width, orig_height, flip_h);
     }
     if (yolox_runner) {
-        draw_yolo_detections(drawMat, yolox_runner, scale_x, scale_y, offset_x, offset_y, flip_h, fusion_output, orig_width, orig_height);
+        draw_yolo_detections(drawMat, yolox_runner, scale_x, scale_y, offset_x, offset_y, flip_h, fusion_output, orig_width, orig_height, draw_score_threshold);
     }
 
     // Draw blue bounding boxes for confirmed employees (vest classifier output)

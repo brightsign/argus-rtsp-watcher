@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cmath>
 #include <thread>
 #include <iostream>
 #include <unordered_set>
@@ -17,6 +18,8 @@
 #include "health/health_manager.h"
 #include "metrics/file_logger.h"
 #include "metrics/log_global.h"
+#include "metrics/stage_stats.h"
+#include "metrics/windowed_average.h"
 #include "models/model_factory.h"
 #include "models/model_runner.h"
 #include "models/model_runner_retinaface.h"
@@ -49,6 +52,38 @@ inline void resolve_usb_device(InputConfig& in) {
     std::string dev = find_working_usb_camera();
     if (!dev.empty()) in.usb_device = dev;
   }
+}
+
+// How long each step of recover_pipeline may take before the engine gives up and
+// exits (see exit_on_recovery_stall). The tight steps normally finish in about a
+// second or less, so their limits are generous multiples. Opening the input is
+// the exception: it legitimately blocks on RTSP, whose own timeouts add up when
+// every fallback pipeline times out (a 15 s first-frame wait each, across six
+// pipelines and two URL variants, plus the network wait).
+constexpr std::chrono::seconds kStopWorkersLimit{15};
+constexpr std::chrono::seconds kOpenInputLimit{300};
+constexpr std::chrono::seconds kLoadModelsLimit{60};
+constexpr std::chrono::seconds kReleaseOldPipelineLimit{15};
+constexpr std::chrono::seconds kLaunchWorkersLimit{15};
+
+// Exit status when the engine ends itself over a stalled recovery step (the
+// sysexits.h value EX_SOFTWARE). The watcher treats any exit as a crash and
+// restarts the engine.
+constexpr int kStallExitCode = 70;
+
+// A recovery step that never returns means the capture pipeline cannot be torn
+// down (a GStreamer thread spinning in a teardown it holds a lock for), and the
+// thread that would retry recovery is the one stuck. Nothing inside the process
+// can fix that, and the spinning thread burns a core while the stream is frozen,
+// so end the process and let the watcher start a clean one. _Exit, not exit: the
+// atexit handlers and destructors would wait on the same wedged pipeline.
+void exit_on_recovery_stall(const std::string& phase, std::chrono::milliseconds limit) {
+  LG_CRIT("recover_pipeline:stalled in '%s' for more than %lld s; the capture pipeline cannot be "
+          "torn down. Exiting so the watcher restarts this engine.",
+          phase.c_str(),
+          static_cast<long long>(std::chrono::duration_cast<std::chrono::seconds>(limit).count()));
+  std::fflush(nullptr);
+  std::_Exit(kStallExitCode);
 }
 }
 
@@ -172,7 +207,8 @@ static void normalize_rgb_u8_to_float(const uint8_t* src_rgb, float* dst_f,
 Orchestrator::Orchestrator(PipelineConfig cfg) noexcept
     : cfg_(std::move(cfg)),
       state_(OrchestratorState::Stopped),
-      source_health_(detect_source_kind(cfg_.input)) {}
+      source_health_(detect_source_kind(cfg_.input)),
+      recovery_watchdog_(exit_on_recovery_stall) {}
 
 Orchestrator::~Orchestrator() { stop_threads(); destroy_pipeline(); }
 
@@ -207,7 +243,18 @@ bool Orchestrator::switch_input(const InputConfig& new_input) noexcept {
 }
 
 bool Orchestrator::build_pipeline() noexcept {
+  // Get device ID from config, or auto-detect from system (MAC address, serial, hostname)
+  if (!cfg_.device_id.empty()) {
+    device_id_ = cfg_.device_id;
+    LG_INFO("[orch] Using device ID from config: %s\n", device_id_.c_str());
+  } else {
+    device_id_ = device_info::get_device_id("BS-UNKNOWN");
+    LG_INFO("[orch] Auto-detected device ID: %s\n", device_id_.c_str());
+  }
+
   resolve_usb_device(cfg_.input);
+  cfg_.input.rtsp.label = device_id_;
+  cfg_.input.rtsp.camera_time = cfg_.enable_camera_time;
   std::unique_ptr<IInputSource> input_tmp;
   try { input_tmp = make_input(cfg_.input); } catch (...) { input_tmp.reset(); }
   if (!input_tmp) { LG_ERROR("[orch] failed to create input\n"); return false; }
@@ -308,10 +355,10 @@ bool Orchestrator::build_pipeline() noexcept {
   if (cfg_.enable_frame_output && !cfg_.output_dir.empty()) {
     try {
       frame_writer_yolo_ = make_frame_writer_disk(cfg_.output_dir, cfg_.max_frames,
-                                                   cfg_.frame_quality, cfg_.blur_config);
-      LG_INFO("[orch] YOLO frame writer enabled: output_dir=%s max_frames=%d quality=%d blur=%s\n",
-              cfg_.output_dir.c_str(), cfg_.max_frames, cfg_.frame_quality,
-              cfg_.blur_config.enabled ? "enabled" : "disabled");
+                                                   cfg_.frame_quality,
+                                                   cfg_.frame_output_stride);
+      LG_INFO("[orch] YOLO frame writer enabled: output_dir=%s max_frames=%d quality=%d stride=%d\n",
+              cfg_.output_dir.c_str(), cfg_.max_frames, cfg_.frame_quality, cfg_.frame_output_stride);
     } catch (const std::exception& e) {
       LG_WARN("[orch] Failed to create frame writer: %s (will continue without output)\n", e.what());
       frame_writer_yolo_.reset();
@@ -324,16 +371,8 @@ bool Orchestrator::build_pipeline() noexcept {
   // Convert input to shared_ptr and assign to member variable
   input_  = std::shared_ptr<IInputSource>(std::move(input_tmp));
   
-  // Initialize device and stream identifiers before creating publishers
-  // Get device ID from config, or auto-detect from system (MAC address, serial, hostname)
-  if (!cfg_.device_id.empty()) {
-    device_id_ = cfg_.device_id;
-    LG_INFO("[orch] Using device ID from config: %s\n", device_id_.c_str());
-  } else {
-    device_id_ = device_info::get_device_id("BS-UNKNOWN");
-    LG_INFO("[orch] Auto-detected device ID: %s\n", device_id_.c_str());
-  }
-  
+  // Initialize the stream identifier before creating publishers
+  // (device_id_ was resolved at the top of build_pipeline so the input could be labeled with it)
   stream_id_ = cfg_.input.usb_device.empty() ? 
                cfg_.input.rtsp_url : cfg_.input.usb_device;
   if (stream_id_.empty() && !cfg_.input.file_path.empty()) {
@@ -801,7 +840,14 @@ void Orchestrator::supervisor_loop() noexcept {
         result.ts_ns = static_cast<uint64_t>(now);
         result.seq = current_seq;
         result.capture_wall_ns = capture_wall_ns_.load(std::memory_order_relaxed);
+        // The person boxes in this message come from the latest inferred frame,
+        // which lags the newest capture named by seq above. Read its identity under
+        // the same lock as the detections so the two can never disagree.
+        result.det_seq = fusion_.yolo_seq;
+        result.det_capture_wall_ns = fusion_.yolo_capture_wall_ns;
+        result.det_source_wall_ns = fusion_.yolo_source_wall_ns;
         result.fps = calculated_fps;
+        result.pipeline_latency_ms = pipeline_latency_ms_.load(std::memory_order_relaxed);
         result.frame_width = fusion_.frame_width;   // V6.2: For normalized speed
         result.frame_height = fusion_.frame_height; // V6.2: For normalized speed
         result.light_enabled = cfg_.light.enabled;
@@ -1128,6 +1174,13 @@ void Orchestrator::mark_broken(FaultCode, int64_t now) noexcept {
 bool Orchestrator::recover_pipeline(int64_t now_ns_val) noexcept {
     LG_INFO("recover_pipeline:starting recovery attempt\n");
 
+    // Every step below runs under the recovery watchdog: this guard arms the first
+    // step and disarms on every way out of the function, and each later step re-arms
+    // it with its own limit. Declared before any local so it is destroyed after all of
+    // them, which keeps the teardown of a failed new pipeline (whose destructor can
+    // block like the old one's) under watch too.
+    stall_watchdog::ScopedStallPhase watch(recovery_watchdog_, "stop worker threads", kStopWorkersLimit);
+
     // 1. Stop (or quarantine) any existing worker
     LG_INFO("recover_pipeline:stopping worker\n");
     stop_threads();  // bounded, returns fast
@@ -1182,8 +1235,11 @@ bool Orchestrator::recover_pipeline(int64_t now_ns_val) noexcept {
 
     // 5. Build brand new input source / runner using that device.
     LG_INFO("recover_pipeline:rebuilding pipeline around %s\n", device_desc.c_str());
+    recovery_watchdog_.arm("open new input", kOpenInputLimit);
 
     std::unique_ptr<IInputSource> new_input_tmp;
+    cfg_.input.rtsp.label = device_id_;
+    cfg_.input.rtsp.camera_time = cfg_.enable_camera_time;
     try { new_input_tmp = make_input(cfg_.input); } catch (...) { new_input_tmp.reset(); }
     if (!new_input_tmp) {
         LG_ERROR("recover_pipeline:failed to create input\n");
@@ -1200,6 +1256,8 @@ bool Orchestrator::recover_pipeline(int64_t now_ns_val) noexcept {
         new_input_tmp->close();
         return false; // still broken
     }
+
+    recovery_watchdog_.arm("load models", kLoadModelsLimit);
 
     // Create face runner only if enabled
     std::shared_ptr<IModelRunner> new_face_runner;
@@ -1243,7 +1301,10 @@ bool Orchestrator::recover_pipeline(int64_t now_ns_val) noexcept {
         new_yolo_runner = std::shared_ptr<IModelRunner>(std::move(new_yolo_runner_tmp));
     }
 
-    // 6. Publish new pipeline objects
+    // 6. Publish new pipeline objects. Replacing input_ and the runners destroys the
+    //    previous ones, and tearing down the old capture pipeline is the step that
+    //    wedged in the field (a spinning jitter-buffer thread), so it has a tight limit.
+    recovery_watchdog_.arm("release previous pipeline", kReleaseOldPipelineLimit);
     auto new_input = std::shared_ptr<IInputSource>(std::move(new_input_tmp));
     
     input_  = new_input;
@@ -1251,6 +1312,7 @@ bool Orchestrator::recover_pipeline(int64_t now_ns_val) noexcept {
     yolo_runner_ = new_yolo_runner;
 
     // 7. Reset orchestrator run state for NEW worker threads
+    recovery_watchdog_.arm("launch worker threads", kLaunchWorkersLimit);
     LG_INFO("recover_pipeline:resetting run state for new worker threads\n");
     stop_capture_.store(false, std::memory_order_release);
     stop_face_.store(false, std::memory_order_release);
@@ -1292,6 +1354,20 @@ bool Orchestrator::recover_pipeline(int64_t now_ns_val) noexcept {
 void Orchestrator::capture_loop_threadfn() noexcept {
     LG_INFO("capture_loop:start");
 
+    // Per-window cost of the full-resolution copy into SharedFrame and of the
+    // light analyzer, summarized at debug level (log_level=debug). tryFetch is
+    // not timed here: it blocks for the next camera frame, so its duration is
+    // the frame interval, not a cost (the convert is timed in input_rtsp).
+    constexpr int64_t kTimingWindowNs = 1000000000LL;
+    metrics::StageStats copy_stats, light_stats;
+    int64_t timing_window_start_ns = metrics::steady_now_ns();
+    uint64_t frames_with_camera_time = 0;  // within the current window
+    int64_t last_camera_lag_ms = 0;        // engine capture minus camera capture, latest frame
+    metrics::WindowedAverage lag_average(metrics::kLagAverageWindowNs);  // shown on the stamp
+    // Camera-clock-independent media-chain latency (ms), averaged over the same
+    // window. Unlike lag_average it is immune to an unsynchronized camera clock.
+    metrics::WindowedAverage pipeline_latency_average(metrics::kLagAverageWindowNs);
+
     while (!stop_capture_.load(std::memory_order_relaxed)) {
         // Try to fetch next frame from input source
         FrameView camView{};
@@ -1323,6 +1399,26 @@ void Orchestrator::capture_loop_threadfn() noexcept {
         clock_gettime(CLOCK_REALTIME, &wall_ts);
         sf->capture_wall_ns = static_cast<int64_t>(wall_ts.tv_sec) * 1000000000LL + wall_ts.tv_nsec;
         capture_wall_ns_.store(sf->capture_wall_ns, std::memory_order_relaxed);
+        sf->source_wall_ns = camView.source_wall_ns;
+        if (sf->source_wall_ns > 0) {
+            ++frames_with_camera_time;
+            last_camera_lag_ms = (sf->capture_wall_ns - sf->source_wall_ns) / 1000000LL;
+            // Averaged here, over every captured frame, because the stamp is drawn
+            // on only some of them; it travels to the stamp inside the frame.
+            lag_average.add(metrics::steady_now_ns(), last_camera_lag_ms);
+            sf->lag_average_ms = static_cast<int64_t>(std::llround(*lag_average.mean()));
+        }
+
+        // Camera-clock-independent latency: the time the frame spent inside the
+        // GStreamer pipeline, averaged like the camera lag above so the stamp and
+        // the MQTT health field read a stable number rather than per-frame jitter.
+        if (camView.pipeline_latency_ns >= 0) {
+            const int64_t latency_ms = camView.pipeline_latency_ns / 1000000LL;
+            pipeline_latency_average.add(metrics::steady_now_ns(), latency_ms);
+            const int64_t avg_ms = static_cast<int64_t>(std::llround(*pipeline_latency_average.mean()));
+            sf->pipeline_latency_ms = avg_ms;
+            pipeline_latency_ms_.store(avg_ms, std::memory_order_relaxed);
+        }
 
         // V7.1: Preserve original camera/stream dimensions for coordinate transforms
         // RTSP: orig=1920×1080, preprocessed=320×320
@@ -1340,15 +1436,20 @@ void Orchestrator::capture_loop_threadfn() noexcept {
         }
 
         // Copy BGR data (this is the one place we duplicate pixel data)
+        const int64_t copy_start_ns = metrics::steady_now_ns();
         sf->bgr.resize(static_cast<size_t>(sf->width * sf->height * 3));
         if (camView.plane0) {
             std::memcpy(sf->bgr.data(), camView.plane0, sf->bgr.size());
         }
+        const int64_t copy_end_ns = metrics::steady_now_ns();
+        copy_stats.add_ns(copy_end_ns - copy_start_ns);
 
         // Wall-clock ms matches the frame_ts domain already published to consumers.
         if (light_analyzer_) {
             light_analyzer_->update(*sf, sf->capture_wall_ns / 1000000LL);
         }
+        const int64_t light_end_ns = metrics::steady_now_ns();
+        light_stats.add_ns(light_end_ns - copy_end_ns);
 
         // Fan out to enabled model mailboxes (lock-free post)
         // Only post to mailboxes that have active consumers
@@ -1363,6 +1464,22 @@ void Orchestrator::capture_loop_threadfn() noexcept {
 
         // Update heartbeat for supervisor
         last_heartbeat_ns_.store(now_ns(), std::memory_order_release);
+
+        if (light_end_ns - timing_window_start_ns >= kTimingWindowNs) {
+            LG_DEBUG("capture_loop: stage ms avg/max device=%s frames=%llu size=%dx%d "
+                     "copy=%.1f/%.1f light=%.1f/%.1f camera_time=%llu/%llu last_lag_ms=%lld",
+                     device_id_.c_str(),
+                     (unsigned long long)copy_stats.count(), sf->width, sf->height,
+                     copy_stats.average_ms(), copy_stats.max_ms(),
+                     light_stats.average_ms(), light_stats.max_ms(),
+                     (unsigned long long)frames_with_camera_time,
+                     (unsigned long long)copy_stats.count(),
+                     (long long)last_camera_lag_ms);
+            copy_stats.reset();
+            light_stats.reset();
+            frames_with_camera_time = 0;
+            timing_window_start_ns = light_end_ns;
+        }
     }
 
     LG_INFO("capture_loop:stop");
@@ -1389,6 +1506,8 @@ void Orchestrator::face_loop_threadfn() noexcept {
         config.model_input_width = face_runner_->spec().input_size.w;
         config.model_input_height = face_runner_->spec().input_size.h;
         config.model_name = "RetinaFace";
+        config.device_id = device_id_;
+        config.target_fps = cfg_.target_fps;
         config.flip_horizontal = cfg_.flip_horizontal;  // Mirror correction
         config.zone = cfg_.zone;  // full ZoneCfg incl. membership mode
 
@@ -1404,7 +1523,7 @@ void Orchestrator::face_loop_threadfn() noexcept {
         inference_worker::run_inference_loop(
             face_runner_.get(),
             mb_wrapper,
-            reinterpret_cast<FusionResults*>(&fusion_),
+            &fusion_,
             /*frame_writer=*/nullptr,
             config,
             stop_face_);
@@ -1442,10 +1561,12 @@ void Orchestrator::yolo_loop_threadfn() noexcept {
         config.model_input_width = yolo_runner_->spec().input_size.w;
         config.model_input_height = yolo_runner_->spec().input_size.h;
         config.model_name = "YOLOX";
-        config.blur_config = cfg_.blur_config;  // Pass blur config for person blur
+        config.device_id = device_id_;
+        config.target_fps = cfg_.target_fps;
         config.flip_horizontal = cfg_.flip_horizontal;  // Mirror correction
         config.enable_frame_stamp = cfg_.enable_frame_stamp;  // Burn frame_seq/frame_ts stamp
         config.zone = cfg_.zone;  // full ZoneCfg incl. membership mode
+        config.draw_score_threshold = cfg_.secondary_model.conf_threshold;  // Draw only boxes >= the per-stream confidence, matching the analytics gate
 
         // Wrap the member mailbox in a shared_ptr wrapper that doesn't own it
         std::shared_ptr<FrameMailbox> mb_wrapper(
@@ -1460,7 +1581,7 @@ void Orchestrator::yolo_loop_threadfn() noexcept {
         inference_worker::run_inference_loop(
             yolo_runner_.get(),
             mb_wrapper,
-            reinterpret_cast<FusionResults*>(&fusion_),
+            &fusion_,
             frame_writer_yolo_.get(),
             config,
             stop_yolo_,

@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -20,7 +22,9 @@ import (
 	"argus-rtsp-watcher/internal/configgen"
 	"argus-rtsp-watcher/internal/configwatch"
 	"argus-rtsp-watcher/internal/health"
+	"argus-rtsp-watcher/internal/linewriter"
 	"argus-rtsp-watcher/internal/platform"
+	"argus-rtsp-watcher/internal/rotatelog"
 	"argus-rtsp-watcher/internal/supervisor"
 )
 
@@ -43,10 +47,24 @@ const (
 	// supervised as a single process (ID mediamtxID) when config.json enables it.
 	mediamtxBinary = "mediamtx"
 	mediamtxID     = "mediamtx"
+
+	// The main log collects everything that is not one stream's engine log: the
+	// watcher's own lines and the output of every child process (MediaMTX, the
+	// broker, the dashboard, the preview servers, and each engine's raw stderr).
+	// Each engine writes its own per-stream log itself. Sizes match the engine's.
+	mainLogName     = "main.log"
+	mainLogMaxBytes = 5 << 20
+	mainLogMaxFiles = 5
+
+	// configServerID is the on-player dashboard. A global restart leaves it
+	// running so the page that requested the restart still gets its response.
+	configServerID = "config-server"
 )
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
+	// UTC with microseconds, the same layout linewriter gives child output, so
+	// main.log reads as one timeline and lines up with the engines' UTC logs.
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds | log.LUTC | log.Lmsgprefix)
 	log.SetPrefix("[watcher] ")
 
 	extDir, err := os.Executable()
@@ -60,11 +78,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("config discovery: %v", err)
 	}
-	log.Printf("using config %s", cfgPath)
 	w, err := config.Load(cfgPath)
 	if err != nil {
 		log.Fatalf("config load: %v", err)
 	}
+
+	tpl, err := config.EngineTemplate(w, pkgDefault)
+	if err != nil {
+		log.Fatalf("engine template: %v", err)
+	}
+	mainLog := openMainLog(tpl)
+	log.Printf("using config %s", cfgPath)
 
 	tier := platform.TierFor(platform.DetectPlayerSoC())
 	log.Printf("SoC=%s model=%s safe_streams=%d configured=%d",
@@ -74,11 +98,7 @@ func main() {
 			len(w.Streams), tier.SafeStreams, tier.Model)
 	}
 
-	tpl, err := config.EngineTemplate(w, pkgDefault)
-	if err != nil {
-		log.Fatalf("engine template: %v", err)
-	}
-	opts := configgen.Options{TemplateJSON: tpl, TopicPrefix: topicPrefix, MQTTHost: mqttHost, MQTTPort: mqttPort, LogLevel: w.LogLevel}
+	opts := configgen.Options{TemplateJSON: tpl, TopicPrefix: topicPrefix, MQTTHost: mqttHost, MQTTPort: mqttPort, LogLevel: w.LogLevel, PreviewStride: w.PreviewStride}
 
 	engineBin := filepath.Join(extDir, "argus-engine")
 	engineEnv := engineEnviron(extDir)
@@ -87,8 +107,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("build specs: %v", err)
 	}
+	initialSpecs = withOutputs(initialSpecs, mainLog)
 
-	brokerCmd, err := startBroker(extDir)
+	brokerCmd, err := startBroker(extDir, mainLog)
 	if err != nil {
 		log.Fatalf("broker: %v", err)
 	}
@@ -108,8 +129,10 @@ func main() {
 	defer stop()
 
 	// Live reconciliation: re-read config.json on file change or SIGHUP and
-	// drive the supervisor toward the new desired stream set.
-	reload := func() {
+	// drive the supervisor toward the new desired stream set. A non-nil
+	// restartID additionally forces a restart of every process it selects, so
+	// edits that leave a process's spec fingerprint unchanged still take effect.
+	reconcileFromConfig := func(restartID func(id string) bool) {
 		nw, err := config.Load(cfgPath)
 		if err != nil {
 			log.Printf("reload skipped, invalid config: %v", err)
@@ -120,18 +143,33 @@ func main() {
 			log.Printf("reload skipped, engine template: %v", err)
 			return
 		}
-		nopts := configgen.Options{TemplateJSON: ntpl, TopicPrefix: topicPrefix, MQTTHost: mqttHost, MQTTPort: mqttPort, LogLevel: nw.LogLevel}
+		nopts := configgen.Options{TemplateJSON: ntpl, TopicPrefix: topicPrefix, MQTTHost: mqttHost, MQTTPort: mqttPort, LogLevel: nw.LogLevel, PreviewStride: nw.PreviewStride}
 		specs, err := buildSpecs(nw, nopts, engineBin, extDir, cfgPath, engineEnv)
 		if err != nil {
 			log.Printf("reload skipped, build specs: %v", err)
 			return
 		}
+		specs = withOutputs(specs, mainLog)
 		log.Printf("reconciling to %d streams", len(specs))
-		sup.Reconcile(specs)
+		if restartID == nil {
+			sup.Reconcile(specs)
+			return
+		}
+		sup.ReconcileAndRestart(specs, restartID)
+	}
+	reload := func() { reconcileFromConfig(nil) }
+	// restartAll re-reads config.json and mediamtx.yml and restarts mediamtx and
+	// every engine and preview, so changes the file watch cannot see (such as an
+	// edited mediamtx.yml) apply without a reboot.
+	restartAll := func() {
+		log.Printf("restart requested: restarting mediamtx and all engines")
+		reconcileFromConfig(func(id string) bool { return id != configServerID })
 	}
 	go configwatch.Watch(ctx, cfgPath, reconcileInterval, reload)
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
+	restart := make(chan os.Signal, 1)
+	signal.Notify(restart, syscall.SIGUSR1)
 	go func() {
 		for {
 			select {
@@ -139,6 +177,8 @@ func main() {
 				return
 			case <-hup:
 				reload()
+			case <-restart:
+				restartAll()
 			}
 		}
 	}()
@@ -148,6 +188,41 @@ func main() {
 		log.Printf("broker stop: %v", err)
 	}
 	log.Printf("shutdown complete")
+}
+
+// openMainLog opens the main log beside the engines' stream logs and makes the
+// watcher's own log lines go to it as well as to stderr (so a startup failure is
+// still visible in the init script's redirect). It returns nil, after saying why,
+// when the file cannot be opened: logging to stderr alone beats not starting.
+func openMainLog(template json.RawMessage) io.Writer {
+	dir, err := config.EngineLogDir(template)
+	if err != nil {
+		log.Printf("main log disabled: %v", err)
+		return nil
+	}
+	mainLog, err := rotatelog.New(filepath.Join(dir, mainLogName), mainLogMaxBytes, mainLogMaxFiles)
+	if err != nil {
+		log.Printf("main log disabled: %v", err)
+		return nil
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, mainLog))
+	return mainLog
+}
+
+// withOutputs returns specs whose child output goes to the main log, each line
+// timestamped and tagged with the process id ("[reo1]", "[reo1:preview]",
+// "[mediamtx]", ...). With no main log the specs are returned unchanged and the
+// children keep inheriting the watcher's stderr.
+func withOutputs(specs []supervisor.Spec, mainLog io.Writer) []supervisor.Spec {
+	if mainLog == nil {
+		return specs
+	}
+	tagged := make([]supervisor.Spec, len(specs))
+	for i, spec := range specs {
+		spec.Output = linewriter.NewPrefixer("["+spec.ID+"]", mainLog)
+		tagged[i] = spec
+	}
+	return tagged
 }
 
 // previewPort returns the port assigned to the preview server of the
@@ -176,6 +251,12 @@ func buildSpecs(w config.Watcher, opts configgen.Options, engineBin, extDir, cfg
 		if err := os.WriteFile(outPath, rendered, 0o644); err != nil {
 			return nil, err
 		}
+		framesDir := configgen.FramesDir(opts, s.ID)
+		if err := os.MkdirAll(framesDir, 0o755); err != nil {
+			return nil, err
+		}
+		outputFrame := filepath.Join(framesDir, "output.jpg")
+
 		sum := sha256.Sum256(rendered)
 		env := append([]string{}, engineEnv...)
 		env = append(env, "GST_REGISTRY=/tmp/gst-"+s.ID+".bin")
@@ -185,14 +266,13 @@ func buildSpecs(w config.Watcher, opts configgen.Options, engineBin, extDir, cfg
 			Args:        []string{"--config", outPath},
 			Env:         env,
 			Fingerprint: hex.EncodeToString(sum[:]),
+			// The engine rewrites outputFrame every frame; the supervisor's
+			// liveness watchdog restarts it if that stops while it is alive.
+			LivenessFile: outputFrame,
 		})
 
-		framesDir := configgen.FramesDir(opts, s.ID)
-		if err := os.MkdirAll(framesDir, 0o755); err != nil {
-			return nil, err
-		}
 		previewArgs := []string{
-			"-file", filepath.Join(framesDir, "output.jpg"),
+			"-file", outputFrame,
 			"-port", strconv.Itoa(previewPort(index)),
 		}
 		previewSum := sha256.Sum256([]byte(strings.Join(previewArgs, "\x00")))
@@ -210,14 +290,17 @@ func buildSpecs(w config.Watcher, opts configgen.Options, engineBin, extDir, cfg
 	}
 
 	// Always-on on-player zone dashboard (config-server) on :20300. It serves the
-	// zone-drawing page and edits the SAME config.json the watcher discovered, so a
-	// Save hot-reloads through configwatch -- no restart. Its fingerprint is only
-	// the bin+config path, so reconciling streams never needlessly restarts it.
-	cfgSum := sha256.Sum256([]byte("config-server|" + cfgPath))
+	// zone-drawing page and edits the SAME config.json the watcher discovered; a
+	// Save signals this watcher (SIGHUP) to reload, and the dashboard's Restart
+	// signals it (SIGUSR1), so it is handed our pid. Its fingerprint is only the
+	// bin+config path (not the pid), so reconciling streams never needlessly
+	// restarts it; it lives and dies with this watcher, which keeps the pid valid.
+	cfgSum := sha256.Sum256([]byte(configServerID + "|" + cfgPath))
 	specs = append(specs, supervisor.Spec{
-		ID:          "config-server",
-		Bin:         filepath.Join(extDir, "config-server"),
-		Args:        []string{"--port", "20300", "--config", cfgPath},
+		ID:  configServerID,
+		Bin: filepath.Join(extDir, "config-server"),
+		Args: []string{"--port", "20300", "--config", cfgPath,
+			"--watcher-pid", strconv.Itoa(os.Getpid())},
 		Fingerprint: hex.EncodeToString(cfgSum[:]),
 	})
 	return specs, nil
@@ -256,7 +339,7 @@ func mediamtxSpec(w config.Watcher, extDir string) (supervisor.Spec, bool) {
 	}, true
 }
 
-func startBroker(extDir string) (*exec.Cmd, error) {
+func startBroker(extDir string, mainLog io.Writer) (*exec.Cmd, error) {
 	confPath := "/tmp/argus-watcher-mosquitto.conf"
 	// Two listeners: plain MQTT on 1883 (engines publish here) and MQTT over
 	// WebSockets on 9001 so browser JS (the on-player presentation) can subscribe
@@ -270,7 +353,11 @@ func startBroker(extDir string) (*exec.Cmd, error) {
 	if err := os.WriteFile(confPath, []byte(conf), 0o644); err != nil {
 		return nil, err
 	}
-	cmd, err := broker.Start(filepath.Join(extDir, "bin", "mosquitto"), confPath)
+	var brokerOutput io.Writer
+	if mainLog != nil {
+		brokerOutput = linewriter.NewPrefixer("[mosquitto]", mainLog)
+	}
+	cmd, err := broker.Start(filepath.Join(extDir, "bin", "mosquitto"), confPath, brokerOutput)
 	if err != nil {
 		return nil, err
 	}

@@ -19,6 +19,10 @@ bool AppConfig::validate(char* err, size_t err_sz) const noexcept {
     if (err&&err_sz) std::snprintf(err, err_sz, "runtime invalid: %s", tmp);
     return false;
   }
+  if (frame_output_stride < 1) {
+    if (err&&err_sz) std::snprintf(err, err_sz, "frame_output_stride must be >= 1, got %d", frame_output_stride);
+    return false;
+  }
   for (const auto& p : publishers) {
     if (!p.validate(tmp, sizeof(tmp))) {
       if (err&&err_sz) std::snprintf(err, err_sz, "publisher invalid: %s", tmp);
@@ -189,6 +193,19 @@ bool load_from_file(const std::string& path, AppConfig& out, bool /*strict*/, ch
       read_float("roi_frac", out.light.roi_frac);
       read_int("sample_stride", out.light.sample_stride);
       read_bool("monochrome_camera", out.light.monochrome_camera);
+      read_float("region_threshold", out.light.region_dark_level);
+      // An operator-drawn [x0,y0,x1,y1] region switches the analyzer to the
+      // region-luminance decision (see LightCfg). The Go supervisor validates
+      // the coordinates; a malformed array here simply leaves the region off.
+      if (l.contains("region") && l["region"].is_array() && l["region"].size() == 4 &&
+          l["region"][0].is_number() && l["region"][1].is_number() &&
+          l["region"][2].is_number() && l["region"][3].is_number()) {
+        out.light.region_x0 = l["region"][0].get<float>();
+        out.light.region_y0 = l["region"][1].get<float>();
+        out.light.region_x1 = l["region"][2].get<float>();
+        out.light.region_y1 = l["region"][3].get<float>();
+        out.light.region_enabled = true;
+      }
     }
 
     // Parse explicit input source selection (new field)
@@ -231,20 +248,16 @@ bool load_from_file(const std::string& path, AppConfig& out, bool /*strict*/, ch
     if (j.contains("frame_quality") && j["frame_quality"].is_number_integer()) {
       out.frame_quality = j["frame_quality"].get<int>();
     }
+    if (j.contains("frame_output_stride") && j["frame_output_stride"].is_number_integer()) {
+      out.frame_output_stride = j["frame_output_stride"].get<int>();
+    }
     if (j.contains("enable_frame_stamp") && j["enable_frame_stamp"].is_boolean()) {
       out.enable_frame_stamp = j["enable_frame_stamp"].get<bool>();
     }
+    if (j.contains("enable_camera_time") && j["enable_camera_time"].is_boolean()) {
+      out.enable_camera_time = j["enable_camera_time"].get<bool>();
+    }
 
-    // Parse face blur options
-    if (j.contains("blur_faces") && j["blur_faces"].is_boolean()) {
-      out.blur_faces = j["blur_faces"].get<bool>();
-    }
-    if (j.contains("blur_method") && j["blur_method"].is_string()) {
-      out.blur_method = j["blur_method"].get<std::string>();
-    }
-    if (j.contains("blur_intensity") && j["blur_intensity"].is_number_integer()) {
-      out.blur_intensity = j["blur_intensity"].get<int>();
-    }
     // Parse horizontal flip option (for front-facing/mirrored cameras)
     if (j.contains("flip_horizontal") && j["flip_horizontal"].is_boolean()) {
       out.flip_horizontal = j["flip_horizontal"].get<bool>();

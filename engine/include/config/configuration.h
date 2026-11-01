@@ -48,7 +48,9 @@ struct AppConfig {
   std::string output_dir{};         // Directory for decorated frames
   int max_frames{0};                // Max frames to keep (0 = no limit)
   int frame_quality{85};            // JPEG quality (1-100)
+  int frame_output_stride{1};       // Save one preview frame in every N processed frames (1 = every frame)
   bool enable_frame_stamp{true};    // Burn frame_seq/frame_ts stamp into decorated frames (video<->MQTT sync)
+  bool enable_camera_time{true};    // Recover each frame's camera capture time from RTCP sender reports (RTSP only; source_ts)
 
   // Custom detection zone (optional; normalized 0..1 fractions of frame size).
   // Populated only when the config contains a "zone" object. mode selects the
@@ -64,11 +66,6 @@ struct AppConfig {
   // Per-stream ambient light/dark detection. Reuses LightCfg so the section 4.5
   // defaults live in exactly one C++ place; JSON "light" keys override them.
   LightCfg light;
-
-  // Face blur options (for privacy in output frames)
-  bool blur_faces{false};              // Enable face blurring in output frames
-  std::string blur_method{"pixelate"}; // "pixelate" or "gaussian"
-  int blur_intensity{12};              // Block size (4-32) for pixelate, kernel size (31-99) for gaussian
 
   // Flip output frame horizontally (mirror)
   // Useful for front-facing webcams that deliver a mirrored image.

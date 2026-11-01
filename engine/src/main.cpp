@@ -3,10 +3,16 @@
 #include <chrono>
 #include <thread>
 #include <iostream>
+#include <string>
+#include <unistd.h>
+#if defined(__GLIBC__)
+#include <execinfo.h>
+#endif
 #include <opencv2/core.hpp>
 #include <opencv2/core/ocl.hpp>
 
 #include "metrics/file_logger.h"
+#include "metrics/log_naming.h"
 #include "metrics/log_global.h"
 #include "config/configuration.h"
 #include "orchestration/orchestrator.h"
@@ -50,6 +56,19 @@ static void install_crash_handlers() {
   auto sig_handler = [](int s){
     LG_CRIT("FATAL: Signal %d received (segfault/abort)", s);
     std::fflush(nullptr);
+    // Dump a stack trace so the crash can be located. backtrace() and
+    // backtrace_symbols_fd() are async-signal-safe and write straight to
+    // stderr, which the watcher captures into the per-stream log; resolve the
+    // frames offline with addr2line against the -g build. Guarded because
+    // execinfo.h is a glibc extension.
+#if defined(__GLIBC__)
+    void* frames[64];
+    const int n = backtrace(frames, 64);
+    static const char hdr[] = "FATAL: backtrace (innermost frame first):\n";
+    const ssize_t written = write(STDERR_FILENO, hdr, sizeof(hdr) - 1);
+    (void)written;
+    backtrace_symbols_fd(frames, n, STDERR_FILENO);
+#endif
     std::_Exit(128 + s);
   };
   
@@ -122,9 +141,21 @@ int main(int argc, char** argv) {
     cv::ocl::setUseOpenCL(false);
     #endif
     
+    // Parse CLI first: the config file's name is the stream's name, which names
+    // this engine's own log file from the very first line.
+    CliArgs cli = parse_cli(argc, argv);
+    const std::string startup_stem = log_naming::sanitize_log_stem(
+        cli.cfg ? log_naming::path_stem(cli.cfg) : std::string());
+
     // ---- logging (initial setup - use /tmp to avoid boot-time SD mount race) ----
+    // One file per stream, so four engines never share a file or rotate over each
+    // other. Mirror to stderr only on a terminal: under the watcher stderr is its
+    // main log, which must not be flooded with every stream's lines.
+    const bool stderr_is_terminal = ::isatty(STDERR_FILENO) != 0;
     FileRotatingLogger::Config logcfg;
-    logcfg.path = "/tmp/gaze.log";
+    logcfg.path = log_naming::stream_log_path("/tmp", startup_stem);
+    logcfg.also_stderr = stderr_is_terminal;
+    logcfg.utc_time = true;  // match the UTC on-frame stamp and MQTT timestamps
     logcfg.max_mb = 5;
     logcfg.max_files = 5;
     logcfg.min_level = LogLevel::Info;  // Start with Info, will be updated from config
@@ -138,9 +169,6 @@ int main(int argc, char** argv) {
 
     // TEST: Verify atomic flag operations work correctly
     test_atomic_flags();
-
-    // Parse CLI once
-    CliArgs cli = parse_cli(argc, argv);
 
     // Pick config path (CLI or default search)
     std::string cfg_path;
@@ -179,11 +207,17 @@ int main(int argc, char** argv) {
       LG_INFO("Log level set to: %s", level_names[static_cast<int>(level)]);
     }
 
-    // Re-initialize logger to configured log_dir if specified
+    // Re-initialize logger to configured log_dir if specified. The file is named
+    // for the stream: its device id, else the config file's name.
     if (!appcfg.log_dir.empty()) {
-      std::string log_path = appcfg.log_dir + "/gaze.log";
+      const std::string stem = appcfg.device_id.empty()
+          ? startup_stem
+          : log_naming::sanitize_log_stem(appcfg.device_id);
+      std::string log_path = log_naming::stream_log_path(appcfg.log_dir, stem);
       FileRotatingLogger::Config cfg2;
       cfg2.path      = log_path;
+      cfg2.also_stderr = stderr_is_terminal;
+      cfg2.utc_time  = true;
       cfg2.max_mb    = 5;
       cfg2.max_files = 5;
       cfg2.min_level = flog->level();
@@ -193,7 +227,7 @@ int main(int argc, char** argv) {
         flog = flog2;
         LG_INFO("Logger switched to: %s", log_path.c_str());
       } else {
-        LG_WARN("Could not open log at %s, keeping /tmp/gaze.log", log_path.c_str());
+        LG_WARN("Could not open log at %s, keeping %s", log_path.c_str(), flog->path().c_str());
       }
     }
 
@@ -311,7 +345,10 @@ int main(int argc, char** argv) {
     pc.output_dir = appcfg.output_dir;
     pc.max_frames = appcfg.max_frames;
     pc.frame_quality = appcfg.frame_quality;
+    pc.frame_output_stride = appcfg.frame_output_stride;
+    pc.target_fps = appcfg.runtime.target_fps;
     pc.enable_frame_stamp = appcfg.enable_frame_stamp;
+    pc.enable_camera_time = appcfg.enable_camera_time;
 
     // Configure custom detection zone (emitted as an additive per-track in_zone).
     pc.zone.enabled = appcfg.zone.enabled;
@@ -325,13 +362,6 @@ int main(int argc, char** argv) {
     pc.zone.x1 = appcfg.zone.x1;
     pc.zone.y1 = appcfg.zone.y1;
     pc.light = appcfg.light;
-
-    // Configure face/person blur for privacy in output frames
-    pc.blur_config.enabled = appcfg.blur_faces;
-    pc.blur_config.intensity = appcfg.blur_intensity;
-    pc.blur_config.method = (appcfg.blur_method == "gaussian")
-        ? output::BlurMethod::GAUSSIAN
-        : output::BlurMethod::PIXELATE;
 
     // Horizontal flip (mirror correction for front-facing cameras)
     pc.flip_horizontal = appcfg.flip_horizontal;

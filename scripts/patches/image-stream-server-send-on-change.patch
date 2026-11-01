@@ -1,0 +1,200 @@
+diff --git a/internal/server/handlers.go b/internal/server/handlers.go
+index a75dfb7..27c6cd6 100644
+--- a/internal/server/handlers.go
++++ b/internal/server/handlers.go
+@@ -83,6 +83,11 @@ func (s *Server) handleVideo(w http.ResponseWriter, r *http.Request) {
+ 	}
+ }
+ 
++// keepaliveInterval is how long the video stream holds back an unchanged frame
++// before resending it anyway, so an idle connection is not mistaken for a dead
++// one by a proxy or the browser. It is a variable so tests can shorten it.
++var keepaliveInterval = 5 * time.Second
++
+ func (s *Server) handleMultipartStream(w http.ResponseWriter, r *http.Request) {
+ 	log.Printf("[HANDLER] ▶ Video stream handler called for client %s", r.RemoteAddr)
+ 
+@@ -101,6 +106,12 @@ func (s *Server) handleMultipartStream(w http.ResponseWriter, r *http.Request) {
+ 	frameCount := 0
+ 	startTime := time.Now()
+ 	var lastETag string
++	// The frame this client was last sent, and when. The stream polls at 30 Hz but
++	// the source updates only a few times a second; resending the unchanged frame
++	// on every tick made the browser decode and paint the same JPEG about seven
++	// times for each new one.
++	var lastSentETag string
++	lastSentAt := time.Now()
+ 
+ 	for {
+ 		select {
+@@ -111,6 +122,17 @@ func (s *Server) handleMultipartStream(w http.ResponseWriter, r *http.Request) {
+ 				r.RemoteAddr, duration, frameCount, r.Context().Err())
+ 			return
+ 		case <-ticker.C:
++			// Send only when the cached frame has changed (or the keepalive is
++			// due). The ETag check is cheap; Get copies the whole JPEG, so it is
++			// not called for a frame that will not be sent.
++			cachedETag := s.cache.GetETag()
++			if cachedETag == "" {
++				continue
++			}
++			if cachedETag == lastSentETag && time.Since(lastSentAt) < keepaliveInterval {
++				continue
++			}
++
+ 			data, etag, _, ok := s.cache.Get()
+ 			if !ok {
+ 				if s.debug {
+@@ -174,6 +196,8 @@ func (s *Server) handleMultipartStream(w http.ResponseWriter, r *http.Request) {
+ 				log.Printf("[HANDLER] Video stream [%s]: WARNING - ResponseWriter does not support flushing!", r.RemoteAddr)
+ 			}
+ 
++			lastSentETag = etag
++			lastSentAt = time.Now()
+ 			frameCount++
+ 		}
+ 	}
+diff --git a/internal/server/send_on_change_test.go b/internal/server/send_on_change_test.go
+new file mode 100644
+index 0000000..dca3b41
+--- /dev/null
++++ b/internal/server/send_on_change_test.go
+@@ -0,0 +1,138 @@
++package server
++
++import (
++	"context"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/bs-frame-monitor/internal/cache"
++)
++
++// streamFor runs the multipart video handler against the cache for the given
++// duration and returns everything the client received. If during is non-nil it
++// runs halfway through, so a test can change the cache while a client is
++// connected.
++func streamFor(t *testing.T, c *cache.ImageCache, duration time.Duration, during func()) string {
++	t.Helper()
++
++	srv := NewServer(0, c, false)
++	ctx, cancel := context.WithCancel(context.Background())
++	req := httptest.NewRequest("GET", "/video", nil).WithContext(ctx)
++	rec := httptest.NewRecorder()
++
++	done := make(chan struct{})
++	go func() {
++		srv.handleMultipartStream(rec, req)
++		close(done)
++	}()
++
++	if during != nil {
++		time.Sleep(duration / 2)
++		during()
++		time.Sleep(duration / 2)
++	} else {
++		time.Sleep(duration)
++	}
++	cancel()
++	<-done
++	return rec.Body.String()
++}
++
++func framesIn(body string) int { return strings.Count(body, "--frame\r\n") }
++
++func publish(c *cache.ImageCache, payload string) {
++	c.Update([]byte(payload), time.Now(), int64(len(payload)))
++}
++
++func TestVideoStreamSendsAnUnchangedFrameOnce(t *testing.T) {
++	c := cache.NewImageCache(false)
++	publish(c, "frame-one")
++
++	// About nine 30 Hz ticks pass; the source never changes. Resending the same
++	// JPEG on every tick made the browser decode it about seven times per new frame.
++	body := streamFor(t, c, 300*time.Millisecond, nil)
++
++	if got := framesIn(body); got != 1 {
++		t.Errorf("sent %d frames of an unchanged image, want exactly 1", got)
++	}
++	if !strings.Contains(body, "frame-one") {
++		t.Error("the frame was not sent at all")
++	}
++}
++
++func TestVideoStreamSendsAFrameWhenItChanges(t *testing.T) {
++	c := cache.NewImageCache(false)
++	publish(c, "frame-one")
++
++	body := streamFor(t, c, 400*time.Millisecond, func() { publish(c, "frame-two") })
++
++	if got := framesIn(body); got != 2 {
++		t.Errorf("sent %d frames, want 2 (the original and the changed one)", got)
++	}
++	first, second := strings.Index(body, "frame-one"), strings.Index(body, "frame-two")
++	if first < 0 || second < 0 || first > second {
++		t.Errorf("frames missing or out of order: frame-one at %d, frame-two at %d", first, second)
++	}
++}
++
++func TestVideoStreamSendsOnlyTheNewestOfSeveralFramesBetweenTicks(t *testing.T) {
++	c := cache.NewImageCache(false)
++	publish(c, "frame-one")
++
++	body := streamFor(t, c, 400*time.Millisecond, func() {
++		for _, payload := range []string{"burst-1", "burst-2", "burst-3", "burst-4", "burst-5"} {
++			publish(c, payload)
++		}
++	})
++
++	if !strings.Contains(body, "burst-5") {
++		t.Error("the newest frame of the burst was not sent")
++	}
++	for _, stale := range []string{"burst-1", "burst-2", "burst-3", "burst-4"} {
++		if strings.Contains(body, stale) {
++			t.Errorf("sent %s, which was already superseded before the next tick", stale)
++		}
++	}
++}
++
++func TestVideoStreamResendsAnIdleFrameAfterTheKeepaliveInterval(t *testing.T) {
++	previous := keepaliveInterval
++	keepaliveInterval = 100 * time.Millisecond
++	defer func() { keepaliveInterval = previous }()
++
++	c := cache.NewImageCache(false)
++	publish(c, "frame-one")
++
++	body := streamFor(t, c, 450*time.Millisecond, nil)
++
++	// The original, then one keepalive about every 100 ms: not silence, and not
++	// one frame per 33 ms tick either.
++	if got := framesIn(body); got < 3 || got > 6 {
++		t.Errorf("sent %d frames in 450 ms with a 100 ms keepalive, want about 4", got)
++	}
++}
++
++func TestVideoStreamSendsNothingBeforeThereIsAnImage(t *testing.T) {
++	c := cache.NewImageCache(false)
++
++	body := streamFor(t, c, 150*time.Millisecond, nil)
++
++	if got := framesIn(body); got != 0 {
++		t.Errorf("sent %d frames with an empty cache", got)
++	}
++}
++
++func TestVideoStreamStartsWithTheCurrentFrameWithoutWaitingForAChange(t *testing.T) {
++	// A client connecting to a quiet source must still get a picture at once,
++	// not wait for the next update.
++	c := cache.NewImageCache(false)
++	publish(c, "already-there")
++
++	body := streamFor(t, c, 120*time.Millisecond, nil)
++
++	if !strings.Contains(body, "already-there") {
++		t.Error("a new client was not sent the frame that was already cached")
++	}
++}

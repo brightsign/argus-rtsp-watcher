@@ -19,6 +19,8 @@
 #include "config/publisher_config.h"
 #include "output/publisher_v2.h"
 #include "orchestration/zone.h"
+#include "orchestration/inference_worker.h"
+#include "orchestration/stall_watchdog.h"
 #include "tracking/tracker.h"
 #include "analysis/light_analyzer.h"
 
@@ -46,10 +48,10 @@ struct PipelineConfig {
   std::string output_dir;           // Directory for decorated frames
   int max_frames = 0;               // Max frames to keep (0 = no limit)
   int frame_quality = 85;           // JPEG quality (1-100)
+  int frame_output_stride = 1;      // Save one preview frame in every N processed frames
+  int target_fps = 30;              // Cap on frames each inference worker starts per second (0 = no cap)
   bool enable_frame_stamp = true;   // Burn frame_seq/frame_ts stamp into decorated frames
-
-  // Face blur options (for privacy in output frames)
-  output::BlurConfig blur_config;   // Blur configuration
+  bool enable_camera_time = true;   // Recover camera capture time from RTCP sender reports (RTSP only)
 
   // Flip output frame horizontally (mirror correction for front-facing cameras)
   bool flip_horizontal{false};
@@ -158,23 +160,16 @@ private:
   // Wall-clock (CLOCK_REALTIME ns) minted alongside frame_seq_ at capture,
   // for the frame_seq/frame_ts video<->MQTT sync key (see capture_loop_threadfn).
   std::atomic<int64_t> capture_wall_ns_{0};
+  // Latest windowed-average media-chain latency (ms), camera-clock independent
+  // (see pipeline_latency.h); -1 when unavailable. Published as health.queue_latency_ms.
+  std::atomic<int64_t> pipeline_latency_ms_{-1};
 
   // ---- Fusion state: shared analytics result from both models ----
-  struct FusionState {
-    std::mutex m;
-
-    // Face/gaze results (from RetinaFace thread)
-    std::vector<Detection> face_dets;
-    std::vector<Landmarks> face_lms;
-    uint64_t face_seq{0};
-
-    // Object/person detections (from YOLOX thread)
-    std::vector<Detection> yolo_dets;
-    uint64_t yolo_seq{0};
-
-    // Person tracks with stable IDs
-    std::vector<TrackedBox> tracks;
-
+  // The inference workers write into the FusionResults part. It is a base class,
+  // not a parallel copy of its fields, so the worker and the orchestrator can
+  // never disagree about layout (they previously shared memory through a
+  // reinterpret_cast, which silently breaks the moment one struct gains a field).
+  struct FusionState : FusionResults {
     // V6.2: Frame dimensions for normalized speed
     int frame_width{640};
     int frame_height{480};
@@ -232,6 +227,10 @@ private:
     if (!ic.file_path.empty()) return SourceKind::File;
     return SourceKind::Unknown;
   }
+
+  // Ends the process if a step of recover_pipeline never returns. Declared last so
+  // it is destroyed first: its thread is joined before anything else goes away.
+  stall_watchdog::StallWatchdog recovery_watchdog_;
 };
 
 #endif // ORCHESTRATOR_H

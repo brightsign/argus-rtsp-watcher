@@ -19,6 +19,17 @@ struct FrameView {
   uint8_t* plane0{nullptr};
   uint8_t* plane1{nullptr};       // nullptr when single-planar
   int64_t pts_ns{0};              // capture PTS in nanoseconds
+  // Camera capture time of this frame, nanoseconds since the Unix epoch, taken
+  // from RTCP sender reports. 0 = unavailable (no reports, or a clock that is
+  // not plausibly in sync with ours). Distinct from the engine's own capture
+  // stamp, which is taken after network, proxy and decode delay.
+  int64_t source_wall_ns{0};
+  // Camera-clock-independent media-chain latency of this frame, in nanoseconds:
+  // how long it spent inside the GStreamer pipeline (transport, depay, decode,
+  // queue), measured against the pipeline clock rather than the camera's wall
+  // clock (see input/pipeline_latency.h). <0 means unavailable (e.g. USB input,
+  // or before the pipeline clock is selected).
+  int64_t pipeline_latency_ns{-1};
   // V6.2.3.2: Original camera frame dimensions (before resize to model input size)
   // Used for de-letterboxing YOLOX detections back to camera coordinate space
   int orig_width{0};     // Original camera width (e.g., 1280)

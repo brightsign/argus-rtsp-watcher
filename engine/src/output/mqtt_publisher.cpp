@@ -2,6 +2,7 @@
 #include "metrics/log_global.h"
 #include "orchestration/zone.h"
 #include "analysis/light_json.h"
+#include "output/frame_sync_json.h"
 #include <chrono>
 #include <cmath>   // For std::sqrt
 #include <cstdio>
@@ -186,6 +187,10 @@ bool MqttPublisher::publish_result(const PipelineResult& r) noexcept {
     last_ts_ns_   = r.ts_ns;
     frame_seq_    = r.seq;             // Video<->MQTT sync key
     capture_wall_ns_ = r.capture_wall_ns;
+    det_seq_ = r.det_seq;
+    det_capture_wall_ns_ = r.det_capture_wall_ns;
+    det_source_wall_ns_ = r.det_source_wall_ns;
+    pipeline_latency_ms_ = r.pipeline_latency_ms;
     // Use FPS from PipelineResult instead of calculating from frames_accum_
     frames_accum_ = r.fps;  // Store actual FPS in frames_accum_ for use in payload
     frame_width_  = r.frame_width;   // V6.2: Store for normalized speed
@@ -312,12 +317,19 @@ std::string MqttPublisher::make_payload_locked() const {
   payload_buffer_.clear();
   payload_buffer_.reserve(1024 + tracks_.size() * 384);  // Ensure capacity for this message
   
+  // Sync keys for joining recorded video to this message. frame_seq/frame_ts name
+  // the newest frame captured; det_seq/det_ts name the frame the boxes were
+  // detected on (what to match video against); source_ts is the camera's own
+  // capture time for that frame, or null.
+  const std::string sync_fields = output::frame_sync_json(
+      frame_seq_, capture_wall_ns_, det_seq_, det_capture_wall_ns_, det_source_wall_ns_);
+
   // V7.0: Full schema with metadata + employee scene counts
-  char header[1024];
+  char header[1280];
   std::snprintf(header, sizeof(header),
     "{\"schema\":\"analytics/v7.1\","
     "\"ts\":%.2f,\"device\":\"%s\",\"stream\":\"%s\","
-    "\"frame_seq\":%llu,\"frame_ts\":%lld,"
+    "%s,"
     "\"frame_w\":%d,\"frame_h\":%d,"
     "\"model\":\"yolox_s\",\"fw_version\":\"7.0.0\","
     "\"npu_load\":%.1f,"
@@ -326,14 +338,11 @@ std::string MqttPublisher::make_payload_locked() const {
     "\"scene\":{\"person_count\":%d,\"employee_count\":%d,"
                "\"customer_count\":%d,\"unknown_uniform_count\":%d},"
     "\"roi\":{\"type\":\"border\",\"border_frac\":0.30,\"rect\":[%d,%d,%d,%d]},"
-    "\"health\":{\"detector_fps\":%.1f,\"tracker_fps\":%.1f,\"queue_latency_ms\":0,\"dropped_frames\":%d,\"last_model_reload_ts\":%.1f},",
+    "\"health\":{\"detector_fps\":%.1f,\"tracker_fps\":%.1f,\"queue_latency_ms\":%d,\"dropped_frames\":%d,\"last_model_reload_ts\":%.1f},",
     ts_s,
     cfg_.device_id.c_str(),
     cfg_.stream_id.c_str(),
-    // Sync key for joining recorded video to this message: frame_seq matches
-    // the stamp burned into the frame; frame_ts is capture wall-clock in ms.
-    static_cast<unsigned long long>(frame_seq_),
-    static_cast<long long>(capture_wall_ns_ / 1000000LL),
+    sync_fields.c_str(),
     frame_width_, frame_height_,
     npu_load_,
     people_count, people_confident,
@@ -342,7 +351,11 @@ std::string MqttPublisher::make_payload_locked() const {
     // ROI rect (30% border inset)
     int(frame_width_ * 0.30f), int(frame_height_ * 0.30f),
     int(frame_width_ * 0.70f), int(frame_height_ * 0.70f),
-    detector_fps_, tracker_fps_, dropped_frames_, last_model_reload_ts_);
+    // queue_latency_ms carries the camera-clock-independent media-chain latency;
+    // it falls back to 0 (the field's historical placeholder) when unavailable.
+    detector_fps_, tracker_fps_,
+    pipeline_latency_ms_ >= 0 ? static_cast<int>(pipeline_latency_ms_) : 0,
+    dropped_frames_, last_model_reload_ts_);
   payload_buffer_ += header;
 
   // Additive scene-level light/dark summary; omitted entirely when detection is

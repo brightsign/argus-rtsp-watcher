@@ -72,9 +72,18 @@ struct PipelineResult {
   uint64_t seq{0};
   uint64_t ts_ns{0};        // timestamp in nanoseconds (for MQTT)
   int64_t capture_wall_ns{0}; // CLOCK_REALTIME ns at capture (frame_seq/frame_ts sync key)
+  // The frame the person boxes were actually detected on. It lags the newest
+  // capture named by seq/capture_wall_ns by the inference delay, and is what a
+  // consumer must use to relate boxes to a video frame.
+  uint64_t det_seq{0};             // 0 = no detection frame yet
+  int64_t det_capture_wall_ns{0};  // engine capture time of that frame (Unix epoch ns)
+  int64_t det_source_wall_ns{0};   // camera capture time of that frame; 0 = unavailable
   int people_count{0};      // YOLOX: person detections
   int gaze_count{0};        // RetinaFace: faces looking at screen
   int fps{0};               // Actual frame processing rate
+  // Camera-clock-independent media-chain latency (ms), windowed average; <0 =
+  // unavailable. Published as health.queue_latency_ms (see pipeline_latency.h).
+  int64_t pipeline_latency_ms{-1};
   int frame_width{0};       // V6.2: Frame width for normalized speed
   int frame_height{0};      // V6.2: Frame height for normalized speed
   LightState light{};       // Latest light/dark measurement (valid when light_enabled)

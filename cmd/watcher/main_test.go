@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"argus-rtsp-watcher/internal/config"
@@ -157,6 +158,48 @@ func TestBuildSpecsSkipsMediamtxWhenConfigMissing(t *testing.T) {
 		if s.ID == "mediamtx" {
 			t.Error("mediamtx spec must be skipped when its config is missing")
 		}
+	}
+}
+
+func TestBuildSpecsHandsConfigServerTheWatcherPID(t *testing.T) {
+	opts := configgen.Options{TemplateJSON: loadTemplateForTest(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	w := config.Watcher{Streams: []config.Stream{{ID: "a", RTSPURL: "rtsp://h/a", TargetFPS: 10}}}
+
+	specs, err := buildSpecs(w, opts, "/opt/ext/argus-engine", "/opt/ext", "/cfg/config.json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := specs[len(specs)-1]
+	if server.ID != configServerID {
+		t.Fatalf("last spec = %q, want %q", server.ID, configServerID)
+	}
+	want := []string{"--port", "20300", "--config", "/cfg/config.json",
+		"--watcher-pid", strconv.Itoa(os.Getpid())}
+	if !equalArgs(server.Args, want) {
+		t.Errorf("config-server Args=%v want %v", server.Args, want)
+	}
+}
+
+func TestConfigServerFingerprintIgnoresStreamsAndPID(t *testing.T) {
+	// Reconciling streams must never restart the dashboard, so its fingerprint
+	// depends only on the binary and the config path.
+	opts := configgen.Options{TemplateJSON: loadTemplateForTest(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	one := config.Watcher{Streams: []config.Stream{{ID: "a", RTSPURL: "rtsp://h/a", TargetFPS: 10}}}
+	two := config.Watcher{Streams: []config.Stream{
+		{ID: "a", RTSPURL: "rtsp://h/a", TargetFPS: 10},
+		{ID: "b", RTSPURL: "rtsp://h/b", TargetFPS: 5},
+	}}
+
+	first, err := buildSpecs(one, opts, "/opt/ext/argus-engine", "/opt/ext", "/cfg/config.json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := buildSpecs(two, opts, "/opt/ext/argus-engine", "/opt/ext", "/cfg/config.json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, b := first[len(first)-1].Fingerprint, second[len(second)-1].Fingerprint; a != b {
+		t.Errorf("config-server fingerprint changed with the stream set: %s vs %s", a, b)
 	}
 }
 

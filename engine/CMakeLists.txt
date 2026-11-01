@@ -236,7 +236,6 @@ add_executable(argus-engine
         # Output module
         src/output/annotator.cpp
         src/output/async_publisher.cpp
-        src/output/face_blur.cpp
         src/output/frame_writer.cpp
         src/output/mqtt_broker.cpp
         src/output/mqtt_publisher.cpp
@@ -266,6 +265,10 @@ target_link_libraries(argus-engine
   ${MY_LIBS}
   mosquitto
 )
+
+# Export dynamic symbols so the crash handler's backtrace resolves the engine's
+# own function names (not just addresses) when it dumps a stack on a fatal signal.
+target_link_options(argus-engine PRIVATE -rdynamic)
 
 # Convert TARGET_SOC to uppercase for SOC_DIR
 string(TOUPPER ${TARGET_SOC} SOC_DIR)

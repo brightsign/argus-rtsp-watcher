@@ -28,6 +28,30 @@ func TestTopic(t *testing.T) {
 	}
 }
 
+func TestClientIDIsPerStream(t *testing.T) {
+	if got := ClientID("reo1"); got != "xt5-gaze-reo1" {
+		t.Errorf("got %q", got)
+	}
+	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	seen := map[string]bool{}
+	for _, id := range []string{"reo1", "pixley"} {
+		out, err := Render(config.Stream{ID: id, RTSPURL: "rtsp://h/live", TargetFPS: 10}, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(out, &m); err != nil {
+			t.Fatal(err)
+		}
+		mq := m["publishers"].([]any)[0].(map[string]any)["mqtt"].(map[string]any)
+		clientID := mq["client_id"].(string)
+		if seen[clientID] {
+			t.Errorf("duplicate client_id %q", clientID)
+		}
+		seen[clientID] = true
+	}
+}
+
 func TestRenderRTSPStream(t *testing.T) {
 	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
 	out, err := Render(config.Stream{ID: "cam1", RTSPURL: "rtsp://h/live", TargetFPS: 7}, opts)
@@ -321,6 +345,39 @@ func TestRenderLogLevel(t *testing.T) {
 	}
 }
 
+func TestRenderPreviewStride(t *testing.T) {
+	stride := 2
+	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883, PreviewStride: &stride}
+	out, err := Render(config.Stream{ID: "cam", RTSPURL: "rtsp://h/live", TargetFPS: 10}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["frame_output_stride"] != 2.0 {
+		t.Errorf("frame_output_stride = %v, want 2", m["frame_output_stride"])
+	}
+}
+
+func TestRenderPreviewStrideOmittedInheritsTemplate(t *testing.T) {
+	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
+	out, err := Render(config.Stream{ID: "cam", RTSPURL: "rtsp://h/live", TargetFPS: 10}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	// The packaged template ships frame_output_stride=1; leaving the option unset
+	// must not disturb it.
+	if m["frame_output_stride"] != 1.0 {
+		t.Errorf("omitted PreviewStride should inherit the template's 1, got %v", m["frame_output_stride"])
+	}
+}
+
 func TestRenderLogLevelOmittedInheritsTemplate(t *testing.T) {
 	opts := Options{TemplateJSON: loadTemplate(t), TopicPrefix: "bs/argus", MQTTHost: "localhost", MQTTPort: 1883}
 	out, err := Render(config.Stream{ID: "cam", RTSPURL: "rtsp://h/live", TargetFPS: 10}, opts)
@@ -375,6 +432,7 @@ func TestRenderLightDefaults(t *testing.T) {
 		"dark_luma": 40.0, "light_luma": 70.0, "chroma_threshold": 10.0,
 		"ema_alpha": 0.1, "min_dwell_seconds": 5.0, "warmup_seconds": 3.0,
 		"roi_frac": 0.6, "sample_stride": 8.0, "monochrome_camera": false,
+		"region_threshold": 20.0,
 	})
 }
 
@@ -388,6 +446,7 @@ func TestRenderLightOverrides(t *testing.T) {
 		"dark_luma": 40.0, "light_luma": 70.0, "chroma_threshold": 10.0,
 		"ema_alpha": 0.1, "min_dwell_seconds": 5.0, "warmup_seconds": 3.0,
 		"roi_frac": 0.6, "sample_stride": 8.0, "monochrome_camera": false,
+		"region_threshold": 20.0,
 	})
 }
 
@@ -400,5 +459,31 @@ func TestRenderLightExplicitZeroHonored(t *testing.T) {
 		"dark_luma": 0.0, "light_luma": 70.0, "chroma_threshold": 10.0,
 		"ema_alpha": 0.1, "min_dwell_seconds": 0.0, "warmup_seconds": 0.0,
 		"roi_frac": 0.6, "sample_stride": 8.0, "monochrome_camera": false,
+		"region_threshold": 20.0,
 	})
+}
+
+func TestRenderLightRegion(t *testing.T) {
+	// A region with no explicit threshold renders the drawn rectangle and the
+	// default region_threshold; omitting the region renders no "region" key.
+	thresh := 25.0
+	light := renderLightObject(t, config.Stream{ID: "cam1", RTSPURL: "rtsp://h/live", TargetFPS: 10,
+		Light: &config.LightConfig{Region: []float64{0.1, 0.2, 0.8, 0.9}, RegionThreshold: &thresh}})
+	if light["region_threshold"] != 25.0 {
+		t.Errorf("region_threshold = %v, want 25", light["region_threshold"])
+	}
+	region, ok := light["region"].([]any)
+	if !ok || len(region) != 4 {
+		t.Fatalf("region = %v, want a 4-element array", light["region"])
+	}
+	for i, want := range []float64{0.1, 0.2, 0.8, 0.9} {
+		if region[i] != want {
+			t.Errorf("region[%d] = %v, want %v", i, region[i], want)
+		}
+	}
+
+	noRegion := renderLightObject(t, config.Stream{ID: "cam1", RTSPURL: "rtsp://h/live", TargetFPS: 10})
+	if _, present := noRegion["region"]; present {
+		t.Errorf("region key should be absent when no region is drawn")
+	}
 }

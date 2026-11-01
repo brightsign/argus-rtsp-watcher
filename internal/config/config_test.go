@@ -354,6 +354,86 @@ func TestValidateSourcesAndConfidence(t *testing.T) {
 	}
 }
 
+func TestValidatePreviewStride(t *testing.T) {
+	withStride := func(n *int) Watcher {
+		return Watcher{PreviewStride: n, Streams: []Stream{{ID: "a", RTSPURL: "rtsp://h", TargetFPS: 10}}}
+	}
+	for _, ok := range []int{1, 2, 3, 10, MaxPreviewStride} {
+		n := ok
+		if err := withStride(&n).Validate(); err != nil {
+			t.Fatalf("preview_stride %d rejected: %v", ok, err)
+		}
+	}
+	if err := withStride(nil).Validate(); err != nil {
+		t.Fatalf("omitted preview_stride rejected: %v", err)
+	}
+	for _, bad := range []int{0, -1, MaxPreviewStride + 1, 1000} {
+		n := bad
+		if err := withStride(&n).Validate(); err == nil {
+			t.Fatalf("invalid preview_stride %d accepted", bad)
+		}
+	}
+}
+
+func TestLoadParsesPreviewStride(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "w.json")
+	if err := os.WriteFile(p, []byte(`{"preview_stride":2,"streams":[{"id":"a","rtsp_url":"rtsp://x/y"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.PreviewStride == nil || *w.PreviewStride != 2 {
+		t.Errorf("PreviewStride = %v, want 2", w.PreviewStride)
+	}
+}
+
+func TestLoadLeavesPreviewStrideNilWhenOmitted(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "w.json")
+	if err := os.WriteFile(p, []byte(`{"streams":[{"id":"a","rtsp_url":"rtsp://x/y"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.PreviewStride != nil {
+		t.Errorf("omitted preview_stride should be nil, got %d", *w.PreviewStride)
+	}
+}
+
+func TestEngineLogDir(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		template string
+		want     string
+	}{
+		{"configured", `{"log_dir":"/storage/sd/logs","log_level":"info"}`, "/storage/sd/logs"},
+		{"absent", `{"log_level":"info"}`, DefaultLogDir},
+		{"empty", `{"log_dir":""}`, DefaultLogDir},
+		{"other fields ignored", `{"input":{"rtsp_url":""},"log_dir":"/data"}`, "/data"},
+	} {
+		got, err := EngineLogDir(json.RawMessage(tc.template))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestEngineLogDirRejectsMalformedTemplates(t *testing.T) {
+	for _, bad := range []string{`{not json`, `{"log_dir": 7}`, `{"log_dir": ["/tmp"]}`, ``} {
+		if _, err := EngineLogDir(json.RawMessage(bad)); err == nil {
+			t.Errorf("template %q accepted", bad)
+		}
+	}
+}
+
 func TestValidateLogLevel(t *testing.T) {
 	withLevel := func(level string) Watcher {
 		return Watcher{LogLevel: level, Streams: []Stream{{ID: "a", RTSPURL: "rtsp://h", TargetFPS: 10}}}
@@ -448,6 +528,89 @@ func TestLightValidationRejectsBadRanges(t *testing.T) {
 		if err := w.Validate(); err == nil {
 			t.Fatalf("%s: expected error, got nil", tc.name)
 		}
+	}
+}
+
+func TestLightRegionValidation(t *testing.T) {
+	region := func(v ...float64) []float64 { return v }
+	valid := []LightConfig{
+		{Region: region(0.1, 0.1, 0.9, 0.9)},
+		{Region: region(0, 0, 1, 1), RegionThreshold: floatPtr(0)},
+		{Region: region(0.2, 0.2, 0.5, 0.5), RegionThreshold: floatPtr(100)},
+		{RegionThreshold: floatPtr(40)}, // a threshold without a region is harmless
+	}
+	for i, l := range valid {
+		light := l
+		w := Watcher{Streams: []Stream{{ID: "a", RTSPURL: "rtsp://h", TargetFPS: 10, Light: &light}}}
+		if err := w.Validate(); err != nil {
+			t.Fatalf("valid[%d] rejected: %v", i, err)
+		}
+	}
+	bad := []struct {
+		name  string
+		light LightConfig
+	}{
+		{"three values", LightConfig{Region: region(0.1, 0.1, 0.9)}},
+		{"x1<=x0", LightConfig{Region: region(0.5, 0.1, 0.5, 0.9)}},
+		{"y1<=y0", LightConfig{Region: region(0.1, 0.9, 0.9, 0.9)}},
+		{"below zero", LightConfig{Region: region(-0.1, 0, 1, 1)}},
+		{"above one", LightConfig{Region: region(0, 0, 1.2, 1)}},
+		{"threshold<0", LightConfig{RegionThreshold: floatPtr(-1)}},
+		{"threshold>100", LightConfig{RegionThreshold: floatPtr(101)}},
+	}
+	for _, tc := range bad {
+		light := tc.light
+		w := Watcher{Streams: []Stream{{ID: "a", RTSPURL: "rtsp://h", TargetFPS: 10, Light: &light}}}
+		if err := w.Validate(); err == nil {
+			t.Fatalf("%s: expected error, got nil", tc.name)
+		}
+	}
+}
+
+func TestValidateGlobalConfidence(t *testing.T) {
+	for _, bad := range []float64{-0.1, 1.5} {
+		v := bad
+		w := Watcher{Confidence: &v, Streams: []Stream{{ID: "a", RTSPURL: "rtsp://h", TargetFPS: 10}}}
+		if err := w.Validate(); err == nil {
+			t.Fatalf("global confidence %g accepted", bad)
+		}
+	}
+	for _, ok := range []float64{0, 0.4, 1} {
+		v := ok
+		w := Watcher{Confidence: &v, Streams: []Stream{{ID: "a", RTSPURL: "rtsp://h", TargetFPS: 10}}}
+		if err := w.Validate(); err != nil {
+			t.Fatalf("global confidence %g rejected: %v", ok, err)
+		}
+	}
+}
+
+func TestLoadConfidenceGlobalDefaulting(t *testing.T) {
+	load := func(body string) Watcher {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "w.json")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		w, err := Load(p)
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		return w
+	}
+	// No global and no per-stream confidence: the stream gets DefaultConfidence.
+	w := load(`{"streams":[{"id":"a","rtsp_url":"rtsp://x/y"}]}`)
+	if w.Streams[0].Confidence == nil || *w.Streams[0].Confidence != DefaultConfidence {
+		t.Fatalf("want DefaultConfidence %v, got %v", float64(DefaultConfidence), w.Streams[0].Confidence)
+	}
+	// Global set, stream unset: the stream inherits the global.
+	w = load(`{"confidence":0.7,"streams":[{"id":"a","rtsp_url":"rtsp://x/y"}]}`)
+	if w.Streams[0].Confidence == nil || *w.Streams[0].Confidence != 0.7 {
+		t.Fatalf("want 0.7 inherited, got %v", w.Streams[0].Confidence)
+	}
+	// An explicit per-stream confidence overrides the global.
+	w = load(`{"confidence":0.7,"streams":[{"id":"a","rtsp_url":"rtsp://x/y","confidence":0.3}]}`)
+	if w.Streams[0].Confidence == nil || *w.Streams[0].Confidence != 0.3 {
+		t.Fatalf("want 0.3 explicit, got %v", w.Streams[0].Confidence)
 	}
 }
 

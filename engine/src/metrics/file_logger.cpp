@@ -6,6 +6,15 @@
 #include <unistd.h>
 
 namespace {
+// Where to log when the requested path cannot be opened (SD card not mounted,
+// directory missing): the same file name under /tmp, so a stream's log stays
+// apart from the other streams' even in the fallback.
+std::string fallback_path(const std::string& path) {
+  const size_t slash = path.find_last_of('/');
+  const std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
+  return "/tmp/" + name;
+}
+
 bool ensure_dir(const char* dir) {
   struct stat st{};
   if (::stat(dir, &st) == 0) {
@@ -31,7 +40,7 @@ FileRotatingLogger::FileRotatingLogger(const Config& cfg) noexcept
   std::lock_guard<std::mutex> lg(mu_);
   if (path_.rfind("/storage/sd/",0)==0) ensure_dir("/storage/sd/logs");
   if (!open_file_unlocked(path_)) {
-    path_ = "/tmp/gaze.log";
+    path_ = fallback_path(path_);
     open_file_unlocked(path_);
   }
 }
@@ -69,10 +78,12 @@ void FileRotatingLogger::vwrite(LogLevel lvl, const char* fmt, va_list ap) noexc
   if (utc_time_) gmtime_r(&tt, &tm);
   else           localtime_r(&tt, &tm);
 
+  // A Z suffix marks UTC so the zone is never ambiguous when comparing a log
+  // line against the on-frame stamp or an MQTT timestamp.
   char prefix[96];
-  std::snprintf(prefix, sizeof(prefix), "%04d-%02d-%02d %02d:%02d:%02d.%06ld [%s] ",
+  std::snprintf(prefix, sizeof(prefix), "%04d-%02d-%02d %02d:%02d:%02d.%06ld%s [%s] ",
     tm.tm_year+1900, tm.tm_mon+1, tm.tm_mday,
-    tm.tm_hour, tm.tm_min, tm.tm_sec, (long)us, level_str(lvl));
+    tm.tm_hour, tm.tm_min, tm.tm_sec, (long)us, utc_time_ ? "Z" : "", level_str(lvl));
 
   char msg[2048];
   va_list ap2; va_copy(ap2, ap);
@@ -104,7 +115,7 @@ void FileRotatingLogger::rotate_if_needed_unlocked() noexcept {
 
   std::fclose(fp_); fp_ = nullptr;
 
-  // gaze.log.N <- ... <- gaze.log.1 <- gaze.log
+  // <path>.N <- ... <- <path>.1 <- <path>
   for (int i = max_files_-1; i >= 1; --i) {
     char src[512], dst[512];
     std::snprintf(src, sizeof(src), "%s.%d", path_.c_str(), i);

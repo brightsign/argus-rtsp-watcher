@@ -82,6 +82,12 @@ build-config-server: ## Cross-compile the on-player zone dashboard (config-serve
 build-image-server:  ## Build the image-stream-server (MJPEG preview) from its upstream repo (needs git + go + network)
 	bash scripts/build-image-server.sh $(CURDIR)/$(IMAGE_SERVER_BIN)
 
+# The preview server's tests for the package our send-on-change patch changes. Upstream's own
+# root-package integration test is left out on purpose: it already fails against the preview
+# page this repo bakes in (it asserts upstream's branding text), independent of our patch.
+test-image-server: build-image-server ## Run the patched preview server's tests (internal/server); needs network the first time, for the clone
+	cd build/bs-image-stream-server && CGO_ENABLED=0 $(GO) test ./internal/server/...
+
 build-mediamtx:      ## Fetch the MediaMTX aarch64 binary (optional on-player RTSPS proxy; pin MEDIAMTX_VERSION)
 	bash scripts/build-mediamtx.sh $(CURDIR)/$(MEDIAMTX_DIR)
 
@@ -110,7 +116,7 @@ build-engine-tests: prep ## Build the C++ engine unit tests for the host (native
 run-engine-tests: build-engine-tests ## Build and run the C++ engine unit tests
 	$(ENGINE_TEST_BIN)
 
-package: build-watcher build-engine build-image-server build-config-server build-mosquitto build-libs build-models build-mediamtx ## Assemble staging/<SOC> for rk3588/rk3576/rk3568 and produce the dev + LVM extension zips
+package: build-watcher build-engine build-image-server test-image-server build-config-server build-mosquitto build-libs build-models build-mediamtx ## Assemble staging/<SOC> for rk3588/rk3576/rk3568 and produce the dev + LVM extension zips
 	SOC_LIST="$(SOC_LIST)" STAGING_DIR="$(STAGING_DIR)" \
 		WATCHER_BIN="$(CURDIR)/$(WATCHER_BIN)" ENGINE_BIN="$(CURDIR)/$(ENGINE_BIN)" \
 		IMAGE_SERVER_BIN="$(CURDIR)/$(IMAGE_SERVER_BIN)" CONFIG_SERVER_BIN="$(CURDIR)/$(CONFIG_SERVER_BIN)" MEDIAMTX_DIR="$(CURDIR)/$(MEDIAMTX_DIR)" \
@@ -165,4 +171,4 @@ cache-clean:         ## Remove the ENTIRE shared build cache (SDK + toolkit + mo
 	rm -rf "$(CACHE_DIR)"
 	@echo "Shared cache removed. The rknn_tk2 Docker image is left intact; remove it with: docker rmi rknn_tk2"
 
-.PHONY: help build prep copy cache-info cache-clean fetch-sdk build-watcher build-image-server build-config-server build-mediamtx build-mosquitto build-libs build-models build-engine build-engine-tests run-engine-tests package test run-tests run-integration-tests clean
+.PHONY: help build prep copy cache-info cache-clean fetch-sdk build-watcher build-image-server test-image-server build-config-server build-mediamtx build-mosquitto build-libs build-models build-engine build-engine-tests run-engine-tests package test run-tests run-integration-tests clean

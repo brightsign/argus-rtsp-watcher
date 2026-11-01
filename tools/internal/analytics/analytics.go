@@ -1,7 +1,7 @@
-// Package analytics parses the analytics/v7.0 MQTT payloads recorded by
-// record-frames.sh (one JSON object per line, optionally prefixed by a
+// Package analytics parses recorded analytics MQTT payloads (one JSON object
+// per line, as captured with mosquitto_sub, optionally prefixed by a
 // whitespace-separated receive timestamp) and provides the geometry helpers
-// the recording tools share.
+// the analysis tools share.
 package analytics
 
 import (

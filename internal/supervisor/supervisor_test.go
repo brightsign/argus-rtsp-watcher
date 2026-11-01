@@ -134,6 +134,54 @@ func TestReconcileRestartsOnFingerprintChange(t *testing.T) {
 	waitFor(t, func() bool { return l.startCount("a") == 2 })
 }
 
+func TestReconcileAndRestartRestartsOnlyChosenStreams(t *testing.T) {
+	l := newFakeLauncher()
+	s := New(l, Backoff{Min: time.Millisecond, Max: 2 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	specs := []Spec{{ID: "a", Bin: "e", Fingerprint: "1"}, {ID: "b", Bin: "e", Fingerprint: "1"}}
+	go s.Run(ctx, specs)
+	waitFor(t, func() bool { return l.startCount("a") == 1 && l.startCount("b") == 1 })
+
+	// Same fingerprints: only the predicate can cause a restart.
+	s.ReconcileAndRestart(specs, func(id string) bool { return id == "a" })
+	waitFor(t, func() bool { return l.startCount("a") == 2 })
+
+	if l.startCount("b") != 1 {
+		t.Errorf("stream b was restarted though not selected: starts=%d", l.startCount("b"))
+	}
+}
+
+func TestReconcileAndRestartCanRestartEveryStream(t *testing.T) {
+	l := newFakeLauncher()
+	s := New(l, Backoff{Min: time.Millisecond, Max: 2 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	specs := []Spec{{ID: "a", Bin: "e", Fingerprint: "1"}, {ID: "b", Bin: "e", Fingerprint: "1"}}
+	go s.Run(ctx, specs)
+	waitFor(t, func() bool { return l.startCount("a") == 1 && l.startCount("b") == 1 })
+
+	s.ReconcileAndRestart(specs, func(string) bool { return true })
+	waitFor(t, func() bool { return l.startCount("a") == 2 && l.startCount("b") == 2 })
+}
+
+func TestReconcileAndRestartStillRemovesStreamsDroppedFromSpecs(t *testing.T) {
+	l := newFakeLauncher()
+	s := New(l, Backoff{Min: time.Millisecond, Max: 2 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx, []Spec{{ID: "a", Bin: "e", Fingerprint: "1"}, {ID: "b", Bin: "e", Fingerprint: "1"}})
+	waitFor(t, func() bool { return l.startCount("a") == 1 && l.startCount("b") == 1 })
+
+	// b is gone from the desired set: it must be removed, not restarted.
+	s.ReconcileAndRestart([]Spec{{ID: "a", Bin: "e", Fingerprint: "1"}}, func(string) bool { return true })
+	waitFor(t, func() bool { return l.startCount("a") == 2 && !hasStream(s, "b") })
+
+	if l.startCount("b") != 1 {
+		t.Errorf("removed stream b was restarted: starts=%d", l.startCount("b"))
+	}
+}
+
 // stubbornProcess ignores SIGTERM and only exits once it receives SIGKILL,
 // so tests can exercise the grace-timeout escalation path in stopProcess.
 type stubbornProcess struct {

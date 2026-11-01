@@ -172,36 +172,41 @@ Use `frame_w`/`frame_h` from the same message — don't hard-code, since differe
 
 ## Frame stamp (video ↔ MQTT sync)
 
-If you also record the annotated video (the decorated frames the engine writes when `enable_frame_output` is on), the recording and the MQTT stream are two independent outputs with no shared clock by default. The frame stamp closes that gap: every annotated frame carries the same `frame_seq`/capture time that its corresponding MQTT message carries, so a recorder can join a saved frame back to the exact MQTT message it was detected in.
+The boxes are not in the video: an annotated frame only has boxes *drawn* on it, and the structured boxes come over MQTT. To relate a box to a frame of a recorded video, use the timing fields of the MQTT message, below. The annotated frames also carry a human-readable time stamp so you can see that time is advancing.
 
-### The two MQTT fields
+### The MQTT fields
+
+A message is built once per second from the **latest inference result**, not from the newest captured frame, so two different frames are named:
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `frame_seq` | int | Capture sequence number — the same value burned into the matching annotated frame's stamp (below). Monotonically increasing per stream. |
-| `frame_ts` | int | Capture wall-clock time for that frame, **epoch milliseconds** (`CLOCK_REALTIME`, not monotonic uptime — comparable across restarts and hosts). |
+| `frame_seq` | int | Sequence number of the **newest frame captured** when the message was built — the value burned into that frame's stamp (below). Monotonically increasing per stream. |
+| `frame_ts` | int | That frame's capture time as the engine saw it, **epoch milliseconds** (`CLOCK_REALTIME`, not monotonic uptime — comparable across restarts and hosts). Taken *after* network, proxy and decode delay. |
+| `det_seq` | int | Sequence number of the frame **the person boxes were detected on**. It lags `frame_seq` by the inference delay (a few frames normally, more under CPU load). `0` = no detection frame yet. Two consecutive messages can carry the same `det_seq` if no new frame was inferred between them. |
+| `det_ts` | int | That detection frame's engine capture time, epoch ms. |
+| `source_ts` | int or `null` | The **camera's own capture time** of the detection frame, epoch ms, recovered from the stream's RTCP sender reports. `null` when the camera sent none or its clock is not plausibly in sync with the engine's (more than 60 s apart). |
+
+**To relate boxes to a frame of a recorded video, match on `source_ts` when it is present, otherwise `det_ts` — not `frame_ts`/`frame_seq`.** The `frame_*` pair names a newer frame than the one the boxes belong to. `source_ts` is the best match to a recording of the camera's own stream, because it is the camera's clock, not the engine's. Match with a tolerance of half a frame interval, and keep the camera, the player and the recorder on the same NTP source — clock agreement limits the match more than anything else.
 
 These are cheap top-level metadata and are always present, independent of `enable_frame_stamp` (the flag below only controls whether the visual stamp is drawn on the frame itself).
 
+#### Reading `source_ts` correctly
+
+`source_ts` comes from RTCP sender reports, which pair an RTP timestamp with the sender's wall clock. If the engine reads the stream through a proxy such as MediaMTX, the "sender" it sees may be the **proxy**, whose clock reads when it received each packet, not when the camera captured it. A `lag` (the frame's engine capture time minus `source_ts`; see the [README](../README.md#the-time-stamp-on-the-preview-and-what-lag-means)) that is always a few milliseconds is the sign of that; a `lag` of tens to hundreds of milliseconds is the camera's real capture-to-engine delay. Run with `log_level: debug` and read `camera_time=` and `last_lag_ms=` on the `capture_loop` line to see which you have. Camera time applies to RTSP inputs only, and needs GStreamer 1.22 or later in the engine.
+
 ### The stamp burned into the frame
 
-When `enable_frame_stamp` is true (default) and `enable_frame_output` is on, the engine burns two representations of the same `frame_seq`/capture time onto the annotated frame before writing it:
+When `enable_frame_stamp` is true (default) and `enable_frame_output` is on, the engine burns one line of text into the lower-left corner of each annotated frame: `#<frame_seq>  <ISO-8601 UTC time, ms precision>` (e.g. `#48213  2024-12-31T23:52:03.456Z`), white on a filled dark background, pinned to the very bottom of the frame. It is for a person to see that time is advancing in a clip.
 
-Both stamps are stacked in the **lower-left corner**: the human-readable line is pinned to the very bottom, and the machine-readable grid sits directly above it.
+When the camera's capture time is known the line ends with the lag of that frame and its running average over the last 15 seconds, e.g. `#48213  2024-12-31T23:52:03.456Z  lag 55ms  avg15s 61ms`. What the lag is, exactly, and what it leaves out, is defined in the [README](../README.md#the-time-stamp-on-the-preview-and-what-lag-means). The text scales with frame height so it reads the same at any resolution, and its format is built by `format_frame_stamp_text()` in `engine/include/orchestration/frame_stamp.h`.
 
-- **Human-readable** — `#<frame_seq>  <ISO-8601 UTC time, ms precision>` (e.g. `#48213  2024-12-31T23:52:03.456Z`) as white text on a filled dark background, pinned to the very bottom of the frame (baseline at `H - kStampMarginPx`). For eyeballing a clip.
-- **Machine-readable** — a grid of solid black/white cells directly **above** the bottom text band, for a decoder to sample programmatically. The whole stamp **scales continuously with frame height `H`** so it reads the same at any resolution, and it's **bottom-anchored**. Each base size is scaled as `scaled(base) = max(base, round(base*H/kStampScaleRefPx))` (`kStampScaleRefPx` = 600): `cell = scaled(kStampCellPx)` (10px base), `margin = scaled(kStampMarginPx)` (4px base), `text_band = scaled(kStampTextBandPx)` (28px base). Constants are named in `draw_frame_stamp()`, `engine/src/orchestration/inference_worker.cpp`.
-  - **Text band**: the bottom `text_band` px hold the human-readable line; the grid sits above it.
-  - **Quiet zone**: a solid black rectangle, one `cell` wide on every side of the bit grid, with its bottom edge at `H - text_band`.
-  - **Bit grid**: `kStampCols` x `kStampRows` = 8 x 9 cells, each `cell` x `cell` px (≥10px — above the 8x8px floor needed to survive JPEG recompression). Cell top-left corner for grid cell `[row, col]` is at `(grid_x0 + col*cell, grid_y0 + row*cell)`, where `grid_x0 = margin + cell` and `grid_y0 = H - text_band - (kStampRows+1)*cell`.
-  - **Cell color**: pure black `(0,0,0)` = bit `0`, pure white `(255,255,255)` = bit `1`.
-  - **Bit order**: rows 0-7 hold the 8 bytes of the 64-bit `frame_seq`, **MSB-first** (row 0 = bits 63-56, row 7 = bits 7-0). Row 8 holds an 8-bit **XOR checksum** of those 8 bytes. Within a row, column 0 holds that byte's MSB (bit 7) through column 7 holding its LSB (bit 0).
-  - **Decoding**: compute `cell`, `margin`, `text_band`, and `grid_y0` from the frame height, sample the center pixel of each of the 72 cells (`grid_x0 + col*cell + cell/2`, `grid_y0 + row*cell + cell/2`), threshold each to a bit, reassemble the 8 seq bytes MSB-first into a `uint64_t`, then XOR those 8 bytes yourself and compare against row 8 — a mismatch means the read is unreliable (compression artifact, misaligned crop, etc.) and should be discarded rather than trusted. The `tools/framebox` command and `docs/recording-and-sync.md` carry a full worked decoder.
-  - The pure byte/checksum encoder (`encode_frame_stamp_bytes()`, `engine/include/orchestration/frame_stamp.h`) is unit tested independently of the drawing code and is the authoritative reference for the byte order and checksum if this description and the code ever disagree.
+The stamp is not meant to be decoded by a program. The frame's identity for machine use is in the MQTT fields above (`det_seq`, `det_ts`, `source_ts`), which are matched against a recording by time, not read back out of the image.
 
 ### Config
 
-`enable_frame_stamp` (default `true`) in the engine config controls only the burned-in visual stamp; it has no effect on the always-present `frame_seq`/`frame_ts` MQTT fields.
+`enable_frame_stamp` (default `true`) in the engine config controls only the burned-in text stamp; it has no effect on the always-present `frame_seq`/`frame_ts`/`det_seq`/`det_ts` MQTT fields.
+
+`enable_camera_time` (default `true`) in the engine config controls whether each RTSP frame's camera capture time is recovered from RTCP sender reports. Turn it off to stop populating `source_ts` (it then stays `null`) and to drop the `lag` and `avg15s` suffixes from the stamp. It only adds metadata; it does not change how the stream is decoded.
 
 ## Custom zone
 

@@ -4,15 +4,20 @@
 #include <string>
 #include "metrics/logging.h"
 
+// Each engine process (one per stream) logs to its own file, named for its
+// stream (see metrics/log_naming.h), so streams never share a file or collide
+// when rotating. This default is used only when no stream name is given.
+constexpr const char* kDefaultLogPath = "/tmp/engine.log";
+
 class FileRotatingLogger final : public ILogger {
 public:
   struct Config {
-    std::string path   = "/tmp/gaze.log"; // re-opened at configured log_dir after config load
+    std::string path   = kDefaultLogPath;         // re-opened at the stream's own path after config load
     size_t      max_mb = 5;                           // 5 MB per file
-    int         max_files = 5;                        // gaze.log.1 .. .5
+    int         max_files = 5;                        // <path>.1 .. .5
     LogLevel    min_level = LogLevel::Info;           // default threshold
-    bool        also_stderr = true;                   // mirror to stderr
-    bool        utc_time = false;                     // localtime by default
+    bool        also_stderr = true;                   // mirror to stderr (the engine sets this only when stderr is a terminal)
+    bool        utc_time = false;                     // localtime by default (the engine sets true; lines then end the time with Z)
   };
 
   FileRotatingLogger() noexcept;                        // uses default Config{}

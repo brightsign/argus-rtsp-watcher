@@ -3,17 +3,29 @@ package broker
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os/exec"
 	"syscall"
 	"time"
 )
 
+// outputDrainDelay bounds how long Wait lingers for mosquitto's output to
+// drain after it exits.
+const outputDrainDelay = 2 * time.Second
+
 // Start launches mosquitto with the given config path, in its own process
 // group, so it can be stopped independently of the watcher's own group.
-func Start(mosquittoBin, confPath string) (*exec.Cmd, error) {
+// out receives mosquitto's stdout and stderr; nil discards them.
+func Start(mosquittoBin, confPath string, out io.Writer) (*exec.Cmd, error) {
 	cmd := exec.Command(mosquittoBin, "-c", confPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if out != nil {
+		cmd.Stdout = out
+		cmd.Stderr = out
+		// Bound Stop's wait for the output to drain if a grandchild holds it open.
+		cmd.WaitDelay = outputDrainDelay
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start mosquitto: %w", err)
 	}

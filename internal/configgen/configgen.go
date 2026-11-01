@@ -23,11 +23,20 @@ type Options struct {
 	MQTTPort      int
 	FramesBaseDir string
 	LogLevel      string // global engine log verbosity; empty leaves the template's value
+	PreviewStride *int   // save one preview frame in every N processed frames; nil leaves the template's value
 }
+
+const mqttClientIDPrefix = "xt5-gaze"
 
 // Topic returns the per-stream MQTT topic for a stream id.
 func Topic(prefix, id string) string {
 	return fmt.Sprintf("%s/%s/analytics", prefix, id)
+}
+
+// ClientID returns the per-stream MQTT client id. The broker allows one
+// connection per client id, so engines sharing an id evict each other.
+func ClientID(id string) string {
+	return fmt.Sprintf("%s-%s", mqttClientIDPrefix, id)
 }
 
 // FramesDir returns the per-stream directory the engine writes its
@@ -55,6 +64,12 @@ func Render(s config.Stream, o Options) ([]byte, error) {
 	// every stream's engine process; otherwise the template's value stands.
 	if o.LogLevel != "" {
 		m["log_level"] = o.LogLevel
+	}
+
+	// Global preview cadence: an explicit stride overrides the template's, the
+	// same way log_level does.
+	if o.PreviewStride != nil {
+		m["frame_output_stride"] = *o.PreviewStride
 	}
 
 	// Per-stream face-detection toggle. Only an explicit value overrides the
@@ -161,6 +176,7 @@ func Render(s config.Stream, o Options) ([]byte, error) {
 		return nil, fmt.Errorf("template publisher[0].mqtt missing")
 	}
 	mqtt["topic"] = Topic(o.TopicPrefix, s.ID)
+	mqtt["client_id"] = ClientID(s.ID)
 	mqtt["host"] = o.MQTTHost
 	mqtt["port"] = o.MQTTPort
 
@@ -181,7 +197,7 @@ func renderLight(l *config.LightConfig) map[string]any {
 	if l.OnChange != nil {
 		onChange = *l.OnChange
 	}
-	return map[string]any{
+	out := map[string]any{
 		"enabled":           enabled,
 		"on_change":         onChange,
 		"interval_seconds":  valueOrDefault(l.IntervalSeconds, config.DefaultLightIntervalSeconds),
@@ -194,7 +210,14 @@ func renderLight(l *config.LightConfig) map[string]any {
 		"roi_frac":          valueOrDefault(l.ROIFrac, config.DefaultLightROIFrac),
 		"sample_stride":     valueOrDefault(l.SampleStride, config.DefaultLightSampleStride),
 		"monochrome_camera": l.MonochromeCamera,
+		"region_threshold":  valueOrDefault(l.RegionThreshold, float64(config.DefaultLightRegionThreshold)),
 	}
+	// Only a drawn region switches the engine to region-luminance mode; absent,
+	// the engine keeps its central-ROI chroma/luma detector.
+	if len(l.Region) == 4 {
+		out["region"] = []any{l.Region[0], l.Region[1], l.Region[2], l.Region[3]}
+	}
+	return out
 }
 
 func valueOrDefault[T int | float64](value *T, fallback T) T {

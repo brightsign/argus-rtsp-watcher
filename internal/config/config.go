@@ -15,6 +15,11 @@ import (
 // DefaultTargetFPS caps per-stream capture when a stream omits target_fps.
 const DefaultTargetFPS = 10
 
+// MaxPreviewStride bounds preview_stride: beyond it the preview would update
+// less than once in a few seconds at ordinary frame rates, which is a stalled
+// picture, not a lighter one.
+const MaxPreviewStride = 30
+
 // LogLevels is the set of engine logging verbosities config.json may request
 // (case-insensitive), kept in sync with the engine's parser in main.cpp. An
 // empty log_level inherits the engine template's own value (packaged default
@@ -75,9 +80,23 @@ const (
 	DefaultLightMonochrome      = false
 	DefaultLightOnChange        = true
 
+	// DefaultLightRegionThreshold is the region brightness-level threshold
+	// (0..100, the published level scale) below which an operator-drawn light
+	// region reads DARK, when the stream sets a region but omits region_threshold.
+	DefaultLightRegionThreshold = 20
+
 	// MaxLightLevel bounds the 8-bit luma and chroma thresholds.
 	MaxLightLevel = 255
+
+	// MaxLightRegionThreshold bounds the region brightness-level threshold.
+	MaxLightRegionThreshold = 100
 )
+
+// DefaultConfidence is the person-detection confidence a stream gets when it
+// sets no confidence of its own and the top-level global confidence is also
+// unset. The supervisor fills every stream's confidence so the engine always
+// receives an explicit value.
+const DefaultConfidence = 0.4
 
 // LightConfig is the optional per-stream light/dark detection block. Enabled
 // is a pointer so an omitted value (default true) differs from an explicit
@@ -96,6 +115,15 @@ type LightConfig struct {
 	ROIFrac          *float64 `json:"roi_frac"`
 	SampleStride     *int     `json:"sample_stride"`
 	MonochromeCamera bool     `json:"monochrome_camera"`
+	// Region is an optional operator-drawn [x0,y0,x1,y1] rectangle (normalized
+	// 0..1), drawn on the config-server dashboard like a detection zone. When
+	// set, the analyzer measures mean luminance inside it and reads DARK when
+	// that mean is below RegionThreshold, bypassing the IR/chroma detector.
+	Region []float64 `json:"region"`
+	// RegionThreshold is the region brightness-level threshold (0..100, the
+	// published level scale); nil defaults to DefaultLightRegionThreshold.
+	// Adjustable per stream like confidence.
+	RegionThreshold *float64 `json:"region_threshold"`
 }
 
 // validateLight checks every operator-supplied (non-nil) value; nil fields take
@@ -140,6 +168,25 @@ func validateLight(streamID string, l *LightConfig) error {
 	if dark > light {
 		return fmt.Errorf("stream %q light.dark_luma = %g must be <= light_luma = %g", streamID, dark, light)
 	}
+	if l.RegionThreshold != nil {
+		t := *l.RegionThreshold
+		if math.IsNaN(t) || t < 0 || t > MaxLightRegionThreshold {
+			return fmt.Errorf("stream %q light.region_threshold = %g is out of range [0,%d]", streamID, t, MaxLightRegionThreshold)
+		}
+	}
+	if l.Region != nil {
+		if len(l.Region) != 4 {
+			return fmt.Errorf("stream %q light.region must have 4 values [x0,y0,x1,y1], got %d", streamID, len(l.Region))
+		}
+		for i, v := range l.Region {
+			if math.IsNaN(v) || v < 0 || v > 1 {
+				return fmt.Errorf("stream %q light.region[%d] = %g must be in [0,1]", streamID, i, v)
+			}
+		}
+		if l.Region[2] <= l.Region[0] || l.Region[3] <= l.Region[1] {
+			return fmt.Errorf("stream %q light.region must have x1>x0 and y1>y0", streamID)
+		}
+	}
 	return nil
 }
 
@@ -161,7 +208,7 @@ type Stream struct {
 	USBHeight           int          `json:"usb_height"` // optional USB capture height (0 = engine default)
 	USBFPS              int          `json:"usb_fps"`    // optional USB capture fps    (0 = engine default)
 	TargetFPS           int          `json:"target_fps"`
-	Confidence          *float64     `json:"confidence"`            // optional person-detection threshold 0..1 (nil = engine default 0.5)
+	Confidence          *float64     `json:"confidence"`            // optional per-stream person-detection threshold 0..1; nil inherits the global confidence (else DefaultConfidence)
 	DetectFaces         *bool        `json:"detect_faces"`          // optional face-detection toggle (nil = engine default on); false disables RetinaFace (test_yolo_only), leaving person detection running
 	Zone                []float64    `json:"zone"`                  // optional [x0,y0,x1,y1], normalized 0..1
 	ZoneMode            string       `json:"zone_mode"`             // zone membership test: "any" (default) or "base"
@@ -189,6 +236,13 @@ type Watcher struct {
 	Mediamtx Mediamtx        `json:"mediamtx"`
 	Engine   json.RawMessage `json:"engine"`
 	LogLevel string          `json:"log_level"` // optional global engine log verbosity; empty inherits the template default ("info")
+	// Confidence is the global person-detection threshold 0..1 applied to any
+	// stream that sets no confidence of its own. Nil means use DefaultConfidence.
+	Confidence *float64 `json:"confidence"`
+	// PreviewStride saves one preview frame in every N processed frames (1 = every
+	// frame). Nil inherits the engine default, every frame. Higher values trade a
+	// choppier preview for less encoding work.
+	PreviewStride *int `json:"preview_stride"`
 }
 
 // MediamtxSearchPaths returns the mediamtx.yml discovery order, first-found-wins.
@@ -268,6 +322,26 @@ func EngineTemplate(w Watcher, packageDefault string) (json.RawMessage, error) {
 	return pkg.Engine, nil
 }
 
+// DefaultLogDir is where the engines write their per-stream logs, and the watcher
+// its main log, when the engine template names no log_dir.
+const DefaultLogDir = "/tmp"
+
+// EngineLogDir returns the directory log files go to: the engine template's
+// "log_dir", or DefaultLogDir when it is absent or empty. The watcher puts its
+// main log beside the engines' stream logs so all of them are found in one place.
+func EngineLogDir(template json.RawMessage) (string, error) {
+	var parsed struct {
+		LogDir string `json:"log_dir"`
+	}
+	if err := json.Unmarshal(template, &parsed); err != nil {
+		return "", fmt.Errorf("read log_dir from engine template: %w", err)
+	}
+	if parsed.LogDir == "" {
+		return DefaultLogDir, nil
+	}
+	return parsed.LogDir, nil
+}
+
 // Load reads, parses, defaults, and validates a config.json file.
 func Load(path string) (Watcher, error) {
 	data, err := os.ReadFile(path)
@@ -299,6 +373,16 @@ func Load(path string) (Watcher, error) {
 		if w.Streams[i].ZoneWindowMin == 0 {
 			w.Streams[i].ZoneWindowMin = DefaultZoneWindowMinutes
 		}
+		// Fill the per-stream confidence so the engine always receives an explicit
+		// value: an omitted stream confidence inherits the global confidence, and
+		// an omitted global falls to DefaultConfidence.
+		if w.Streams[i].Confidence == nil {
+			c := float64(DefaultConfidence)
+			if w.Confidence != nil {
+				c = *w.Confidence
+			}
+			w.Streams[i].Confidence = &c
+		}
 	}
 	if err := w.Validate(); err != nil {
 		return Watcher{}, err
@@ -314,6 +398,15 @@ func (w Watcher) Validate() error {
 	}
 	if w.LogLevel != "" && !LogLevels[strings.ToLower(w.LogLevel)] {
 		return fmt.Errorf("log_level = %q must be one of debug, info, warn, error, critical", w.LogLevel)
+	}
+	if w.PreviewStride != nil && (*w.PreviewStride < 1 || *w.PreviewStride > MaxPreviewStride) {
+		return fmt.Errorf("preview_stride = %d is out of range [1,%d]", *w.PreviewStride, MaxPreviewStride)
+	}
+	if w.Confidence != nil {
+		c := *w.Confidence
+		if math.IsNaN(c) || c < 0.0 || c > 1.0 {
+			return fmt.Errorf("global confidence = %g is out of range [0,1]", c)
+		}
 	}
 	seen := make(map[string]bool, len(w.Streams))
 	for _, s := range w.Streams {

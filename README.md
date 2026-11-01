@@ -167,7 +167,8 @@ The single operator-facing file. Top-level sections: `streams` (required), `medi
 | `streams` | yes | The list of cameras to run, one engine each (fields below). |
 | `mediamtx` | no | `{ "enabled": bool, "config": "<path>" }` — run the bundled on-player RTSPS proxy. Default off. See [Running the proxy on the player](#running-the-proxy-on-the-player-optional). |
 | `engine` | no | The per-stream engine template (models, thresholds, MQTT, logging). Omit to inherit the packaged default; include to override it. Rendered per stream, with `confidence`/`zone`/`target_fps`/`rtsp_url` applied on top. |
-| `log_level` | no | Global engine log verbosity: `debug`, `info`, `warn`, `error`, or `critical`. Omit to inherit the template (`info`). Set `warn` to silence the engine's continuous per-event INFO logs. Applies to every stream's engine process. |
+| `log_level` | no | Global engine log verbosity: `debug`, `info`, `warn`, `error`, or `critical`. Omit to inherit the template (`info`). Set `warn` to silence the engine's continuous per-event INFO logs. Set `debug` for performance diagnosis: it adds one line per second per stream with the cost of each stage (`input_rtsp: NV12->BGR convert`, `capture_loop: stage ms`, `inference_worker: stage ms`, as avg/max milliseconds). Applies to every stream's engine process. Where the logs go, and how to read them, is under [Logs](#logs). |
+| `preview_stride` | no | Save one preview frame in every N processed frames: `1` (the default) updates the preview on every processed frame, `2` on every other, and so on, up to `30`. Higher values trade a choppier preview for less JPEG encoding. |
 | `streams[].id` | yes | Unique, `^[A-Za-z0-9_-]+$`. Becomes the MQTT topic and preview port index. |
 | `streams[].rtsp_url` | source* | The camera/proxy RTSP URL. |
 | `streams[].file_path` | source* | A local video file to analyze instead of a live feed (test/offline). |
@@ -175,7 +176,7 @@ The single operator-facing file. Top-level sections: `streams` (required), `medi
 | `streams[].usb_width` | no | USB capture width in pixels. Only with `usb: true`; omit for the engine default. |
 | `streams[].usb_height` | no | USB capture height in pixels. Only with `usb: true`; omit for the engine default. |
 | `streams[].usb_fps` | no | USB capture frame rate. Only with `usb: true`; omit for the engine default. |
-| `streams[].target_fps` | no | Default `10`; intended range 5–10. Caps NPU load. |
+| `streams[].target_fps` | no | Default `10`; intended range 5–10. The most often the engine starts inference on this stream. It waits for each slot and then takes the **newest** frame, so the NPU is not driven harder than asked and the frame it picks is as fresh as possible. A stream whose frames take longer than the slot simply runs slower; there is no catch-up burst. `0` removes the cap. |
 | `streams[].confidence` | no | Person-detection threshold, `0.0`–`1.0`. Omit for the engine default (`0.5`). See [Detection confidence](#detection-confidence). |
 | `streams[].detect_faces` | no | `false` disables face detection (RetinaFace) on this stream, cutting NPU/CPU load; person detection, tracking, and zones keep running, but gaze/attention go empty. Omit (or `true`) to keep faces on. |
 | `streams[].zone` | no | Custom "important area" as `[x0,y0,x1,y1]`, normalized 0..1. When set, each track reports `in_zone`. Draw it with the on-player dashboard (`:20300`) or `tools/zone-picker.html`. |
@@ -233,10 +234,25 @@ USB, and a multi-stream feature showcase).
 The extension runs an on-player **zone dashboard** at `http://<player>:20300`
 (the bundled `config-server`, supervised by the watcher). It lists your streams,
 shows each camera's live snapshot, and lets you **draw a detection zone** on it
-and **Save** — the write lands in the live `config.json`, which hot-reloads within
-a few seconds (no reboot). The zone then shows as a faint green outline on that
-camera's annotated feed. (`tools/zone-picker.html` remains as an offline host-side
-picker that exports zone coordinates to paste by hand.)
+and **Save** — the write lands in the live `config.json` and the dashboard signals
+the watcher (`SIGHUP`) to re-read it at once (no reboot; if the signal can't be
+sent, the watcher's file watch applies it within a few seconds). The zone then
+shows as a faint green outline on that camera's annotated feed. Each card also has
+the per-stream **confidence** slider and **faces** on/off toggle.
+(`tools/zone-picker.html` remains as an offline host-side picker that exports zone
+coordinates to paste by hand.)
+
+The **Global settings** panel sets the engine **log level** for every stream. A new
+level changes each engine's rendered config, so the engines restart to apply it and
+video pauses briefly.
+
+**Restart services** (bottom bar) sends the watcher `SIGUSR1`: it re-reads
+`config.json` **and** `mediamtx.yml`, then restarts mediamtx and every engine and
+preview server — without a reboot. Use it after editing `mediamtx.yml` or any file
+the watcher cannot see change. The dashboard itself and the MQTT broker are left
+running. Only saved settings are applied; unsaved edits on the page are not. The
+`POST /restart` endpoint requires an `X-Argus-Action: restart` header, so a web page
+on another origin cannot trigger it.
 
 ## RTSP sources & MediaMTX
 
@@ -388,26 +404,33 @@ flowchart LR
 
 **Light topic.** `bs/argus/<id>/light` is published every `interval_seconds` (default 10) with `event: "periodic"`, and immediately on a state change with `event: "change"` (when `on_change` is true). It is published **retained** (`retain: true`) at **QoS 1**, unlike the analytics topic, which is not retained by default, because it is a state topic: a subscriber that connects between heartbeats gets the current state at once.
 
+The delivery envelope (`device_id`, `event`, `ts_ms`) sits at top level; the scene
+measurement is nested under `light` — the same object the analytics message carries.
+
 ```json
 {
   "device_id": "cam1",
-  "state": "DARK",
-  "level": 0,
-  "ir_mode": true,
-  "luma": 182.4,
-  "chroma": 2.1,
   "event": "periodic",
-  "ts_ms": 1746732409123
+  "ts_ms": 1746732409123,
+  "light": {
+    "state": "DARK",
+    "level": 0,
+    "ir_mode": true,
+    "luma": 182.4,
+    "chroma": 2.1
+  }
 }
 ```
 
 | Field | Meaning |
 |-------|---------|
-| `state` | `LIGHT`, `DARK`, or `UNKNOWN` (during warm-up). |
-| `level` | Real-world light, `0`..`100`. Always `0` in IR mode. |
-| `ir_mode` | `true` when the feed is a monochrome/IR night image. |
-| `luma`, `chroma` | Smoothed luminance and chroma, for tuning thresholds. |
+| `device_id` | Stream/device id. |
 | `event` | `periodic` or `change`. |
+| `ts_ms` | Publish timestamp, epoch milliseconds. |
+| `light.state` | `LIGHT`, `DARK`, or `UNKNOWN` (during warm-up). |
+| `light.level` | Real-world light, `0`..`100`. Always `0` in IR mode. |
+| `light.ir_mode` | `true` when the feed is a monochrome/IR night image. |
+| `light.luma`, `light.chroma` | Smoothed luminance and chroma, for tuning thresholds. |
 
 **Analytics message (schema `analytics/v7.1`).** When light detection is enabled the analytics message gains a scene-level `"light": {"state","level","ir_mode","luma","chroma"}` object and each track gains a `"light": "<STATE>"` field. Both are omitted when detection is disabled, so v7.0 consumers keep working.
 
@@ -443,6 +466,67 @@ http://<player-ip>:<port>/      port = 20200 + the stream's 0-based index in con
 ```
 
 So the example config above gives `lobby` → `:20200`, `entrance` → `:20201`, `aisle` → `:20202`. The player must allow inbound on those ports. Annotated frames are written on-device to `/tmp/argus-frames/<id>/output.jpg`.
+
+### The time stamp on the preview, and what `lag` means
+
+Each annotated frame carries one line of text in its lower-left corner (turn it off with `enable_frame_stamp: false` in the engine config):
+
+```
+#48213  2024-12-31T23:52:03.456Z  lag 55ms  avg15s 61ms
+```
+
+| Part | Meaning |
+|------|---------|
+| `#48213` | The frame number: the engine's count of captured frames for this stream since the engine process started (it restarts from 1 when the engine restarts). |
+| `2024-12-31T23:52:03.456Z` | The time the **engine** captured the frame, UTC, read from the player's clock at the moment the engine fetched it. It ticks in real time, so you can see the picture is live. |
+| `lag 55ms` | How old this frame already was when the engine got it. Defined below. Shown only when the camera's capture time is known. |
+| `avg15s 61ms` | The average of `lag` over the last 15 seconds. Shown only beside a `lag`. |
+
+#### Exactly what `lag` is
+
+```
+lag = (time the engine fetched the frame) − (time the camera captured it)
+```
+
+- **The camera's capture time** comes from the stream's RTCP sender reports, in which the camera says "RTP timestamp X is my clock reading T". The engine matches each decoded frame to its report by timestamp.
+- **The engine's fetch time** is the player's UTC clock, read right after the engine pulls the decoded, colour-converted frame.
+
+So `lag` covers everything between those two instants: the camera encoding and sending the frame, the network, the MediaMTX proxy if there is one, the RTSP jitter buffer, decoding (hardware or software), the colour conversion, and any wait before the engine's capture thread picked the frame up. A busy CPU shows up here.
+
+It does **not** cover anything after the fetch: waiting for the inference worker, inference, drawing the boxes, JPEG encoding, the preview server and the browser. `lag` is therefore **not** the delay you see on screen, which is longer. To estimate the delay on screen, compare the stamped time with a UTC clock when you look at it: *(UTC now) − (stamped time)* is the time since the engine captured the frame, and adding `lag` gives roughly camera-to-screen. That only holds if the clock you compare against agrees with the player's.
+
+**Read `lag` with these limits in mind:**
+
+1. **It subtracts two clocks.** The camera's clock and the player's. Any offset between them goes straight into the number: a camera clock 100 ms behind makes `lag` read 100 ms too high, and one ahead makes it read too low and can turn it negative. Put the camera and the player on the same NTP source. `lag` is only as trustworthy as that sync. If the two clocks differ by more than 60 seconds the camera time is discarded and no `lag` is shown.
+2. **A proxy can stand in for the camera.** If the stream is read through MediaMTX on the player, the time in the sender reports may be the proxy's clock when it received each packet, not the camera's capture instant. Then `lag` leaves out the camera's encode time and the camera-to-proxy network. A `lag` that stays within a few milliseconds for every camera is the sign of this.
+3. **It is per frame, so it jitters.** Individual values commonly swing by tens of milliseconds or more, which is why the average is shown beside it. Sub-millisecond remainders are truncated.
+4. **It is absent when the camera time is unavailable:** the camera sends no sender reports, `enable_camera_time` is `false`, or the input is a USB camera or a file (RTSP only).
+
+#### The 15-second average
+
+`avg15s` is the mean of `lag` over every frame the engine captured in the last 15 seconds, including the frame it is drawn on. It is taken over **all** captured frames, not only the ones that get drawn and saved to the preview, so it is smooth even when `preview_stride` is above 1 and the preview shows only some of the frames. It is rounded to the nearest millisecond (`lag` itself is truncated).
+
+- It starts with the first frame after the engine starts, so for the first seconds it averages over fewer frames.
+- If no frame has a camera time for more than 15 seconds, the average starts over, and it disappears from the line together with `lag`.
+- Read the two together: `lag` is this frame, `avg15s` is the steady level. A `lag` far above the average is a spike, such as a stall or a burst of packets. An average that climbs over minutes means the pipeline or the network is falling behind.
+
+The same numbers are available elsewhere. With `log_level: debug`, the `capture_loop` line in the stream's log (see [Logs](#logs)) reports `camera_time=<frames with a camera time>/<frames>` and `last_lag_ms`. In MQTT, `det_ts − source_ts` is the lag of the frame the boxes were detected on (see [docs/bounding-boxes.md](docs/bounding-boxes.md#frame-stamp-video--mqtt-sync)).
+
+### Logs
+
+Logs are split by who writes them, so one stream's trouble is never buried in another's:
+
+| File | Written by | Holds |
+|------|------------|-------|
+| `<log_dir>/<stream>.log` | that stream's engine | Everything the engine logs for the stream: capture, inference, zones, MQTT, timing at `debug`. One file per stream, named for its `id` (`reo1.log`, `back-door.log`, ...). |
+| `<log_dir>/main.log` | the watcher | Everything that is not one stream's engine log: the watcher's own lines (reloads, restarts, recovery), plus the output of MediaMTX (`[mediamtx]`), the broker (`[mosquitto]`), the dashboard (`[config-server]`), the preview servers (`[reo1:preview]`), and each engine's raw stderr (`[reo1]`: crashes and library noise that bypass its own log). |
+
+- **`log_dir`** is the engine template's `log_dir`, `/tmp` by default. `/tmp` is memory on the player.
+- **Rotation:** each file keeps up to 5 rotated copies of 5 MB (`reo1.log.1` ... `reo1.log.5`). Each stream rotates its own file, so streams never interfere with each other.
+- **Time:** every line is UTC; engine lines end the time with `Z`, and `main.log` uses the same clock, so the files line up.
+- **`/tmp/watcher.log`** is what the init script captures from the watcher process's own stderr: the watcher's own lines (also kept in `main.log`, so a startup failure or a panic is visible even if `main.log` could not be opened) and nothing from the processes it runs. It is not rotated, but the watcher's own output is small.
+- **On a terminal** an engine also mirrors its log to stderr, for running it by hand; under the watcher it does not.
+- **Level:** `log_level` applies to the engines. `debug` is verbose: expect several MB per stream per few minutes.
 
 ### Health
 
@@ -488,14 +572,12 @@ mosquitto_sub -h <player-ip> -t 'bs/argus/#' \
 
 ## Tools (host-side)
 
-Helpers in `tools/` (their own Go module + scripts). Build the binaries with `make -C tools build`; full detail in **[tools/README.md](tools/README.md)** and **[docs/recording-and-sync.md](docs/recording-and-sync.md)**.
+Helpers in `tools/` (their own Go module + scripts). Build the binaries with `make -C tools build`; full detail in **[tools/README.md](tools/README.md)**. To relate a box to a frame of a recorded video, use the MQTT `det_seq` / `det_ts` / `source_ts` fields described in **[docs/bounding-boxes.md](docs/bounding-boxes.md#frame-stamp-video--mqtt-sync)**.
 
 | Tool | What it does |
 |------|--------------|
 | `tools/zone-picker.sh` / `zone-picker.html` | Draw a zone on a live or recorded frame; outputs the normalized `zone` for `config.json` and pixel coords for `boxstats`. |
-| `tools/record-frames.sh` | Record a stream's annotated frames **and** its MQTT box data together, in sync. |
-| `tools/bin/framebox` | Given a recorded frame, decode its `frame_seq` stamp and print the boxes recorded for that exact frame. |
-| `tools/bin/boxstats` | Report the range of person-box areas inside a region across a recording (helps pick a size/zone filter). |
+| `tools/bin/boxstats` | Report the range of person-box areas inside a region across a recording of MQTT messages (helps pick a size/zone filter). |
 
 ## Building
 
@@ -572,7 +654,9 @@ The repo has **no dependency on a sibling Argus tree**. Every runtime asset is p
 | `make build-mosquitto` | the mosquitto broker (from source) + client tools | SDK |
 | `make build-libs` | the runtime `lib/` tree (OpenCV/GStreamer/RGA/RKNN/TurboJPEG), harvested from the SDK sysroot | SDK |
 | `make build-models` | `RetinaFace.rknn` + `yolox_s.rknn` per SoC + coco labels, compiled from upstream ONNX | **Docker** + ~10GB + network |
-| `make build-image-server` | the MJPEG preview server (from its upstream repo) | `git` + `go` + network |
+| `make build-image-server` | the MJPEG preview server (from its upstream repo, with this repo's preview page and source patch applied) | `git` + `go` + network |
+
+The **preview server** is upstream's code plus two things kept in [`scripts/patches/`](scripts/patches): the preview page, and a source patch that makes the video stream send a frame only when it changes (plus a slow keepalive) instead of resending the cached frame on every 30 Hz tick, which had the browser decoding the same JPEG about seven times per new frame. The patch is a diff, so the build fails loudly if upstream changes the code it touches. `make test-image-server` runs the tests for the patched package.
 
 The **RKNN headers and runtime** are not vendored: the Rockchip RKNN API headers and `librknnrt.so` are fetched from the pinned upstream (`airockchip/rknn-toolkit2` `v2.3.0`) by `make prep` into `engine/include/` (a prerequisite of the engine build), so no Rockchip-proprietary bytes live in this repo.
 
@@ -642,10 +726,10 @@ packaging/          bsext_init + make-extension-lvm
 configs/            config.json (per-stream engine config template)
 examples/           example config.json configs (the default baked into the extension lives here)
 scripts/            build.sh, fetch-sdk.sh
-tools/              host tools: zone-picker(.sh/.html), record-frames.sh, framebox, boxstats
+tools/              host tools: zone-picker(.sh/.html), boxstats
 example-client/     minimal MQTT client that prints each message's JSON
 test/               rtsp-sim (multi-cam sim) + loop-stream (accuracy test harness)
-docs/               DESIGN.md, bounding-boxes.md, recording-and-sync.md, HARDWARE-VALIDATION.md
+docs/               DESIGN.md, bounding-boxes.md, HARDWARE-VALIDATION.md
 ```
 
 ## Troubleshooting
@@ -653,19 +737,21 @@ docs/               DESIGN.md, bounding-boxes.md, recording-and-sync.md, HARDWAR
 | Symptom | Check |
 |---------|-------|
 | No MQTT messages | Is an engine running? `curl :9200/healthz` — if `Restarts` keeps climbing, the engine can't open its RTSP stream. |
-| Engines crash-loop, `first-frame timeout` in `/tmp/watcher.log` | The RTSP source is slow to deliver the first frame. Keep the source warm (e.g. MediaMTX `sourceOnDemand: no`) and confirm the player can reach the URL. The engine allows up to 15s for the first frame. |
+| Engines crash-loop, `first-frame timeout` in the stream's log (`/tmp/<id>.log`) | The RTSP source is slow to deliver the first frame. Keep the source warm (e.g. MediaMTX `sourceOnDemand: no`) and confirm the player can reach the URL. The engine allows up to 15s for the first frame. |
 | Preview page loads but shows a placeholder box | The engine isn't writing frames (usually the same RTSP problem above) — fix the engine first; the preview serves whatever is at `/tmp/argus-frames/<id>/output.jpg`. |
 | `over_capacity: true` in health | More streams than the SoC tier supports (see the hardware table). |
 | Player unreachable on preview ports | Open inbound `20200..20200+N-1`. |
 
-Logs: `tail -f /tmp/watcher.log` on the player (engine + watcher output).
+| Startup log shows `stream not available yet (server says not found)` | Normal at boot: MediaMTX is still connecting to the camera, and the engine retries the same hardware-decode pipeline for up to a minute instead of falling back to software. If it ends with `giving up`, the camera never became available through MediaMTX. |
+| A stream's preview is frozen | `grep -a "recover_pipeline" /tmp/<id>.log`. If a step "stalled", the engine ended itself and the watcher restarted it; look for `[<id>]` lines in `main.log` around that time. |
+
+Logs: see [Logs](#logs). `tail -f /tmp/main.log` for the watcher and everything it runs, `tail -f /tmp/<id>.log` for one stream.
 
 ## Documentation
 
 - **[docs/PRE-REQS.md](docs/PRE-REQS.md)** — SDK, shared build cache, and `cache.env` setup; read before building.
 - **[docs/bounding-boxes.md](docs/bounding-boxes.md)** — live bounding-box data over MQTT (schema, coordinates, examples).
-- **[docs/recording-and-sync.md](docs/recording-and-sync.md)** — record the MJPEG streams and match them to the box data by frame.
-- **[tools/README.md](tools/README.md)** — host tools: zone picker, recorder, framebox, boxstats.
+- **[tools/README.md](tools/README.md)** — host tools: zone picker, boxstats.
 - **[test/rtsp-sim/README.md](test/rtsp-sim/README.md)** — serve looped video files as RTSP to test without live cameras.
 - **[docs/DESIGN.md](docs/DESIGN.md)** — architecture and design decisions.
 - **[docs/HARDWARE-VALIDATION.md](docs/HARDWARE-VALIDATION.md)** — on-device validation checklist.

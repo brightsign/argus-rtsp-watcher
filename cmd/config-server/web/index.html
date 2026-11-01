@@ -40,6 +40,9 @@
   /* faces on/off toggle: left = off, right = on (reuses the .modesw slider) */
   .modesw .track.on { background: var(--accent); }
   .modesw .track.on .knob { left: 22px; }
+  /* draw-target toggle: left = zone (default), right = light region (amber) */
+  .modesw .track.light { background: #ffb300; }
+  .modesw .track.light .knob { left: 22px; }
   .colorpick { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; opacity: .85; }
   .colorpick input[type=color] { width: 28px; height: 22px; padding: 0; border: 1px solid rgba(127,127,127,.5);
                                  border-radius: 4px; background: transparent; cursor: pointer; }
@@ -48,17 +51,47 @@
   .thickpick .thickval { min-width: 28px; }
   .winpick { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; opacity: .85; }
   .winpick input[type=number] { width: 56px; }
+  /* global settings panel (applies to every stream) */
+  .panel { border: 1px solid rgba(127,127,127,.35); border-radius: 8px; padding: 10px; margin: 0 0 16px; }
+  .panel h2 { font-size: 15px; margin: 0 0 8px; }
+  .panel .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .panel .hint { font-size: 12px; opacity: .7; flex: 1 1 260px; }
+  .logpick { display: inline-flex; align-items: center; gap: 6px; }
+  button.warn { border-color: #ff9f43; color: #ff9f43; margin-left: auto; }
 </style>
 </head>
 <body>
 <h1>Argus Zone Dashboard</h1>
-<p class="sub">Draw a detection zone on each camera's live view, pick its match mode (any / base), outline color, line width, and alert-border width, set the person-detection <b>confidence</b> threshold, toggle <b>face detection</b> (gaze/attention) on or off, then Save that pane. Changes apply on the player within a few seconds (no reboot). The zone shows as a faint green outline on the video feed. <b>any</b> = any part of a person's box in the zone counts; <b>base</b> = only when their feet are in it. Turning face detection off cuts CPU/NPU load; person detection, tracking, and zones keep running.</p>
+<p class="sub">Draw a detection zone on each camera's live view, pick its match mode (any / base), outline color, line width, and alert-border width, set the person-detection <b>confidence</b> threshold, toggle <b>face detection</b> (gaze/attention) on or off, then Save that pane. Use the <b>draw</b> toggle to switch the mouse between drawing the detection <b>zone</b> and an optional <b>light region</b> (amber): when a light region is drawn, the camera reads <b>DARK</b> whenever the average brightness inside it falls below the <b>dark below</b> threshold, overriding the automatic day/night detector. Changes apply on the player within a few seconds (no reboot). The zone shows as a faint green outline on the video feed. <b>any</b> = any part of a person's box in the zone counts; <b>base</b> = only when their feet are in it. Turning face detection off cuts CPU/NPU load; person detection, tracking, and zones keep running. <b>Global settings</b> (log level, default confidence) apply to every stream. <b>Restart services</b> re-reads <code>config.json</code> and <code>mediamtx.yml</code> and restarts mediamtx and all engines without a reboot.</p>
+<section class="panel" id="globals">
+  <h2>Global settings</h2>
+  <div class="row">
+    <label class="logpick" title="Engine log verbosity for every stream">Log level
+      <select id="loglevel">
+        <option value="">default (info)</option>
+        <option value="debug">debug</option>
+        <option value="info">info</option>
+        <option value="warn">warn</option>
+        <option value="error">error</option>
+        <option value="critical">critical</option>
+      </select>
+    </label>
+    <label class="thickpick" title="Default person-detection confidence for any stream that sets none of its own (0-1)">Default confidence
+      <input type="range" min="0.05" max="0.95" step="0.05" id="globalconf">
+      <span class="thickval" id="globalconfval"></span></label>
+    <button class="primary" id="saveglobal" disabled>Save</button>
+    <span class="cardstatus" id="globalstatus"></span>
+    <span class="hint"><b>warn</b> silences routine output; <b>debug</b> is very verbose but adds per-stage timing lines. A new level applies by restarting each stream's engine, so video pauses briefly. <b>Default confidence</b> applies to streams whose own confidence slider you leave untouched.</span>
+  </div>
+</section>
+
 <div id="cams"></div>
 
 <div id="bar">
   <button class="primary" id="save" disabled>Save &amp; apply</button>
   <button id="reload">Reload from player</button>
   <span id="status"></span>
+  <button class="warn" id="restart" title="Re-read config.json and mediamtx.yml, then restart mediamtx and every engine (no reboot)">Restart services</button>
 </div>
 
 <script>
@@ -68,9 +101,18 @@
   var camsEl = document.getElementById("cams");
   var statusEl = document.getElementById("status");
   var globalSaveBtn = document.getElementById("save");
-  var cfg = null;             // the full parsed config.json; we only edit streams[i].zone
+  var logLevelEl = document.getElementById("loglevel");
+  var saveGlobalBtn = document.getElementById("saveglobal");
+  var globalStatusEl = document.getElementById("globalstatus");
+  var globalConfEl = document.getElementById("globalconf");
+  var globalConfValEl = document.getElementById("globalconfval");
+  var restartBtn = document.getElementById("restart");
+  var LOG_LEVELS = ["debug", "info", "warn", "error", "critical"];
+  var RESTART_COOLDOWN_MS = 10000;  // services take a few seconds to return; block rapid re-clicks
+  var cfg = null;             // the full parsed config.json; we only edit streams[i] fields and log_level
   var cards = [];             // { idx, saveBtn } per rendered card, for dirty tracking
   var baseline = [];          // last-saved signature per stream; Save enables only on change
+  var baselineGlobal = "";    // last-saved global log level ("" = key absent)
   var msgTimers = new WeakMap(); // per status element: timer that auto-hides a "saved" message
 
   function setStatus(msg, cls) {
@@ -81,10 +123,19 @@
   // zoneSig captures just the editable fields, so dirty tracking ignores
   // unrelated config (engine block, etc.) the dashboard never touches.
   function zoneSig(s) {
-    return JSON.stringify([s.zone || null, s.zone_mode, s.zone_color, s.zone_thickness, s.zone_border_thickness, s.zone_window_minutes, s.confidence, s.detect_faces]);
+    var lr = s.light && Array.isArray(s.light.region) ? s.light.region : null;
+    var lt = s.light && s.light.region_threshold != null ? s.light.region_threshold : null;
+    return JSON.stringify([s.zone || null, s.zone_mode, s.zone_color, s.zone_thickness, s.zone_border_thickness, s.zone_window_minutes, s.confidence, s.detect_faces, lr, lt]);
+  }
+  // globalSig is the dashboard-editable global state: log level ("" = absent) and
+  // the global default confidence (null = absent).
+  function globalSig() {
+    return JSON.stringify([cfg && cfg.log_level ? cfg.log_level : "",
+                           cfg && cfg.confidence != null ? cfg.confidence : null]);
   }
   function snapshotBaseline() {
     baseline = Array.isArray(cfg && cfg.streams) ? cfg.streams.map(zoneSig) : [];
+    baselineGlobal = globalSig();
   }
   // Enable each pane's Save (and the global Save) only when that pane differs
   // from the last-saved state; grey them out otherwise.
@@ -95,6 +146,9 @@
       c.saveBtn.disabled = !dirty;
       if (dirty) anyDirty = true;
     });
+    var globalDirty = globalSig() !== baselineGlobal;
+    saveGlobalBtn.disabled = !globalDirty;
+    if (globalDirty) anyDirty = true;
     if (globalSaveBtn) globalSaveBtn.disabled = !anyDirty;
   }
 
@@ -158,6 +212,14 @@
       'faces <span class="lbl lfoff">off</span>' +
       '<span class="track facetrack"><span class="knob"></span></span>' +
       '<span class="lbl lfon">on</span></span>' +
+      '<span class="modesw drawsw" title="What the mouse draws on this camera: the detection zone or the light-measurement region.">' +
+      'draw <span class="lbl ldzone">zone</span>' +
+      '<span class="track drawtrack"><span class="knob"></span></span>' +
+      '<span class="lbl ldlight">light</span></span>' +
+      'light region: <code class="regionval"></code>' +
+      '<button class="clearregion">clear region</button>' +
+      '<label class="winpick" title="The light region reads DARK when its average brightness level (0-100) is below this">' +
+      'dark below <input type="number" min="0" max="100" step="1" class="lumthresh"></label>' +
       '<button class="primary savecard">Save</button>' +
       '<span class="cardstatus"></span></div>';
 
@@ -210,8 +272,13 @@
 
     var confEl = card.querySelector(".conf");
     var confValEl = card.querySelector(".confval");
-    confEl.value = cfg.streams[idx].confidence;
-    confValEl.textContent = (+cfg.streams[idx].confidence).toFixed(2);
+    // A stream with no confidence of its own inherits the global default (else
+    // 0.4); show that effective value but only write a per-stream confidence
+    // when the operator actually moves the slider, so inheritance is preserved.
+    var effConf = cfg.streams[idx].confidence != null ? cfg.streams[idx].confidence
+                : (cfg.confidence != null ? cfg.confidence : 0.4);
+    confEl.value = effConf;
+    confValEl.textContent = (+effConf).toFixed(2);
     confEl.addEventListener("input", function () {
       cfg.streams[idx].confidence = +confEl.value;
       confValEl.textContent = (+confEl.value).toFixed(2);
@@ -247,6 +314,54 @@
     });
     syncMode();
 
+    // ensureLight returns the stream's light object, creating it if absent so the
+    // region fields have somewhere to live.
+    function ensureLight() {
+      if (!cfg.streams[idx].light || typeof cfg.streams[idx].light !== "object") {
+        cfg.streams[idx].light = {};
+      }
+      return cfg.streams[idx].light;
+    }
+    function curRegion() {
+      var l = cfg.streams[idx].light;
+      return l && Array.isArray(l.region) && l.region.length === 4 ? l.region : null;
+    }
+
+    // Draw-target toggle: left = zone (default), right = light region.
+    var drawTarget = "zone";
+    var drawTrack = card.querySelector(".drawtrack");
+    var lblDrawZone = card.querySelector(".ldzone");
+    var lblDrawLight = card.querySelector(".ldlight");
+    function syncDraw() {
+      var light = drawTarget === "light";
+      drawTrack.classList.toggle("light", light);
+      lblDrawLight.classList.toggle("on", light);
+      lblDrawZone.classList.toggle("on", !light);
+    }
+    drawTrack.addEventListener("click", function () {
+      drawTarget = drawTarget === "light" ? "zone" : "light";
+      syncDraw();
+    });
+    syncDraw();
+
+    var regionEl = card.querySelector(".regionval");
+    regionEl.textContent = fmtZone(curRegion());
+    card.querySelector(".clearregion").addEventListener("click", function () {
+      if (cfg.streams[idx].light) delete cfg.streams[idx].light.region;
+      regionEl.textContent = "none";
+      redraw();
+      refreshDirty();
+    });
+
+    var lumEl = card.querySelector(".lumthresh");
+    lumEl.value = (cfg.streams[idx].light && cfg.streams[idx].light.region_threshold != null)
+      ? cfg.streams[idx].light.region_threshold : 20;
+    lumEl.addEventListener("input", function () {
+      var v = parseInt(lumEl.value, 10);
+      ensureLight().region_threshold = (v >= 0 && v <= 100) ? v : 20;
+      refreshDirty();
+    });
+
     var saveBtn = card.querySelector(".savecard");
     saveBtn.addEventListener("click", function () { putConfig(cardStatus, true); });
     cards.push({ idx: idx, saveBtn: saveBtn });
@@ -262,8 +377,15 @@
         ctx.strokeRect(z[0] * canvas.width, z[1] * canvas.height,
                        (z[2] - z[0]) * canvas.width, (z[3] - z[1]) * canvas.height);
       }
+      var reg = curRegion();
+      if (reg && img.clientWidth) {
+        ctx.strokeStyle = "#ffb300";  // amber, distinct from the zone outline
+        ctx.lineWidth = 2;
+        ctx.strokeRect(reg[0] * canvas.width, reg[1] * canvas.height,
+                       (reg[2] - reg[0]) * canvas.width, (reg[3] - reg[1]) * canvas.height);
+      }
       if (drag && drag.cur) {
-        ctx.strokeStyle = "var(--accent)" === "" ? "#00e5ff" : "#00e5ff";
+        ctx.strokeStyle = drawTarget === "light" ? "#ffb300" : "#00e5ff";
         ctx.lineWidth = 2;
         var x = Math.min(drag.x, drag.cur.x), y = Math.min(drag.y, drag.cur.y);
         ctx.strokeRect(x, y, Math.abs(drag.cur.x - drag.x), Math.abs(drag.cur.y - drag.y));
@@ -287,8 +409,14 @@
       var x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y);
       drag = null;
       if (x1 - x0 < 0.02 || y1 - y0 < 0.02) return; // ignore tiny drags
-      cfg.streams[idx].zone = [ +x0.toFixed(4), +y0.toFixed(4), +x1.toFixed(4), +y1.toFixed(4) ];
-      zoneEl.textContent = fmtZone(cfg.streams[idx].zone);
+      var rect = [ +x0.toFixed(4), +y0.toFixed(4), +x1.toFixed(4), +y1.toFixed(4) ];
+      if (drawTarget === "light") {
+        ensureLight().region = rect;
+        regionEl.textContent = fmtZone(rect);
+      } else {
+        cfg.streams[idx].zone = rect;
+        zoneEl.textContent = fmtZone(rect);
+      }
       redraw();
       refreshDirty();
     });
@@ -319,6 +447,10 @@
       return;
     }
     cfg.streams.forEach(function (s, i) { camsEl.appendChild(makeCard(s, i)); });
+    logLevelEl.value = cfg && cfg.log_level ? cfg.log_level : "";
+    var gc = cfg && cfg.confidence != null ? cfg.confidence : 0.4;
+    globalConfEl.value = gc;
+    globalConfValEl.textContent = (+gc).toFixed(2);
     snapshotBaseline();
     refreshDirty();
   }
@@ -329,6 +461,19 @@
       .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
       .then(function (j) {
         cfg = j;
+        // The watcher accepts any case and "warning"; the select offers only the
+        // canonical names, so normalize before the baseline is taken.
+        var level = String(cfg.log_level || "").toLowerCase();
+        if (level === "warning") level = "warn";
+        if (LOG_LEVELS.indexOf(level) >= 0) cfg.log_level = level;
+        else delete cfg.log_level;
+        // Normalize the global default confidence; drop it if absent/invalid so
+        // the engine's own default stands.
+        if (cfg.confidence != null) {
+          var gc = parseFloat(cfg.confidence);
+          if (isFinite(gc) && gc >= 0 && gc <= 1) cfg.confidence = gc;
+          else delete cfg.confidence;
+        }
         // Normalize the per-stream zone mode so the toggle and Save round-trip it
         // even when the file on the player predates the field (default: any).
         if (Array.isArray(cfg.streams)) {
@@ -341,8 +486,29 @@
             s.zone_border_thickness = (bt >= 1 && bt <= 100) ? bt : 20;
             var wm = parseInt(s.zone_window_minutes, 10);
             s.zone_window_minutes = (wm >= 1 && wm <= 1440) ? wm : 15;
-            var c = parseFloat(s.confidence);
-            s.confidence = (isFinite(c) && c >= 0 && c <= 1) ? c : 0.5;
+            // Leave an absent per-stream confidence unset so it inherits the
+            // global default; only sanitize a present value (drop if invalid).
+            if (s.confidence != null) {
+              var c = parseFloat(s.confidence);
+              if (isFinite(c) && c >= 0 && c <= 1) s.confidence = c;
+              else delete s.confidence;
+            }
+            // Sanitize an operator-drawn light region and its threshold; an
+            // invalid region is dropped so the automatic detector stays in use.
+            if (s.light && typeof s.light === "object") {
+              if (Array.isArray(s.light.region) && s.light.region.length === 4 &&
+                  s.light.region.every(function (v) { return isFinite(v) && v >= 0 && v <= 1; }) &&
+                  s.light.region[2] > s.light.region[0] && s.light.region[3] > s.light.region[1]) {
+                s.light.region = s.light.region.map(function (v) { return +(+v).toFixed(4); });
+              } else {
+                delete s.light.region;
+              }
+              if (s.light.region_threshold != null) {
+                var rt = parseFloat(s.light.region_threshold);
+                if (isFinite(rt) && rt >= 0 && rt <= 100) s.light.region_threshold = rt;
+                else delete s.light.region_threshold;
+              }
+            }
             s.detect_faces = s.detect_faces !== false;
           });
         }
@@ -365,14 +531,50 @@
       body: JSON.stringify(cfg, null, 2),
     })
       .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t || ("HTTP " + r.status)); }); return r.json(); })
-      .then(function () {
+      .then(function (result) {
         snapshotBaseline();
         refreshDirty();
-        showMsg(el, "saved — the watcher applies changes within a few seconds", "ok", isCard);
+        // The server SIGHUPs the watcher after the write; if that signal could
+        // not be sent, the watcher's file watch still applies it shortly.
+        var applied = result && result.reload_signaled
+          ? "saved — reload signaled, applying now"
+          : "saved — the watcher applies changes within a few seconds";
+        showMsg(el, applied, "ok", isCard);
       })
       .catch(function (e) { showMsg(el, "save failed: " + e.message, "err", isCard); });
   }
 
+  // restartServices asks the watcher to re-read config.json and mediamtx.yml and
+  // restart mediamtx and every engine. The custom header is required by the
+  // server so a page on another origin cannot trigger a restart.
+  function restartServices() {
+    var unsaved = !globalSaveBtn.disabled;
+    var question = "Restart mediamtx and all engines?\n\nconfig.json and mediamtx.yml are re-read. " +
+      "Video and detection pause for a few seconds.";
+    if (unsaved) question += "\n\nYou have unsaved changes; they are NOT included. Save first.";
+    if (!window.confirm(question)) return;
+
+    restartBtn.disabled = true;
+    setStatus("restarting services...");
+    fetch("/restart", { method: "POST", headers: { "X-Argus-Action": "restart" } })
+      .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t || ("HTTP " + r.status)); }); return r.json(); })
+      .then(function () { setStatus("restart signaled — mediamtx and the engines are coming back; previews resume in a few seconds", "ok"); })
+      .catch(function (e) { setStatus("restart failed: " + e.message, "err"); })
+      .then(function () { setTimeout(function () { restartBtn.disabled = false; }, RESTART_COOLDOWN_MS); });
+  }
+
+  logLevelEl.addEventListener("change", function () {
+    if (logLevelEl.value === "") delete cfg.log_level;
+    else cfg.log_level = logLevelEl.value;
+    refreshDirty();
+  });
+  globalConfEl.addEventListener("input", function () {
+    cfg.confidence = +globalConfEl.value;
+    globalConfValEl.textContent = (+globalConfEl.value).toFixed(2);
+    refreshDirty();
+  });
+  saveGlobalBtn.addEventListener("click", function () { putConfig(globalStatusEl, true); });
+  restartBtn.addEventListener("click", restartServices);
   globalSaveBtn.addEventListener("click", function () { putConfig(statusEl, false); });
   document.getElementById("reload").addEventListener("click", load);
   load();

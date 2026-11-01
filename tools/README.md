@@ -1,43 +1,11 @@
-# Recording tools
+# Tools
 
-Host-side tools for recording an Argus RTSP Watcher stream and joining the
-recorded frames to their bounding-box data. See
-[../docs/recording-and-sync.md](../docs/recording-and-sync.md) for the full
-workflow and the frame-stamp format.
+Host-side helpers for Argus RTSP Watcher: a zone picker for drawing a detection
+zone, and `boxstats` for analysing recorded bounding-box data.
 
-There are two pieces because the boxes are not in the video: the annotated
-MJPEG frames only have boxes *drawn* on them. The structured boxes come from
-MQTT, and each frame is matched to its MQTT message by the `frame_seq` stamp
-burned into the frame's lower-left corner.
-
-## record-frames.sh
-
-Records one stream's frames into a folder and its MQTT box data alongside, so
-they stay in sync.
-
-```sh
-./record-frames.sh --player <ip> --stream <id> --port <20200+index> [--duration SECONDS] [--out DIR]
-```
-
-Writes `frames/f_00000001.jpg ...` (stamped frames) and `boxes.jsonl` (one
-analytics message per line) under `recordings/<stream>-<timestamp>/`. Stop an
-open-ended recording with Ctrl-C. Requires `ffmpeg` and `mosquitto_sub`.
-
-## framebox
-
-Given a recorded frame, decodes its `frame_seq` stamp and prints the bounding
-boxes recorded for that exact frame.
-
-```sh
-make build
-./bin/framebox --boxes recordings/lobby-.../boxes.jsonl recordings/lobby-.../frames/f_00000123.jpg
-```
-
-Without `--boxes` it just prints the decoded `frame_seq`. `--json` emits the
-matched analytics message instead of the text summary.
-
-Exit codes: `0` ok, `1` image/decode error, `2` usage, `3` no matching MQTT
-message for that frame (MQTT publishes ~1/s, so most frames have none).
+To relate a bounding box to a frame of a recorded video, use the `det_seq`,
+`det_ts` and `source_ts` fields of each MQTT message; see
+[../docs/bounding-boxes.md](../docs/bounding-boxes.md#frame-stamp-video--mqtt-sync).
 
 ## zone-picker (draw a zone)
 
@@ -75,9 +43,16 @@ Reports the range of person bounding-box areas for the boxes that fall inside a
 region (e.g. "the fence area") across a whole recording. Use it to pick a
 size/zone filter.
 
+Its input is a JSONL file of MQTT analytics messages, one per line (a leading
+receive timestamp on each line is tolerated). Capture one with:
+
+```sh
+mosquitto_sub -h <player> -t 'bs/argus/<stream-id>/analytics' > boxes.jsonl
+```
+
 ```sh
 make build
-./bin/boxstats --region 150,60,800,560 recordings/entrance-.../boxes.jsonl
+./bin/boxstats --region 150,60,800,560 boxes.jsonl
 ```
 
 - `--region x0,y0,x1,y1` — the region in frame pixels (default `150,60,800,560`,
@@ -106,6 +81,6 @@ For the current deployment the ids are `lobby`, `entrance`, `aisle`
 
 ```sh
 make            # list targets
-make build      # -> ./bin/framebox
-make run-tests  # decoder unit tests
+make build      # -> ./bin/boxstats
+make run-tests  # unit tests
 ```
